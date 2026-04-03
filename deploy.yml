@@ -1,0 +1,43 @@
+name: Deploy Bot to Server
+
+on:
+  push:
+    branches:
+      - main  # Деплой будет срабатывать при пуше в ветку main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            # 1. Переходим в папку проекта (замените bot-folder на имя вашей папки на сервере)
+            mkdir -p ~/bot-folder
+            cd ~/bot-folder
+
+            # 2. Обновляем код из репозитория
+            # Если папка пустая, сначала делаем git clone, если нет — git pull
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/${{ github.repository }}.git .
+            else
+              git pull origin main
+            fi
+
+            # 3. Создаем .env файл из секретов GitHub
+            echo "${{ secrets.ENV_FILE }}" > .env
+
+            # 4. Пересобираем и запускаем (пример для Docker Compose)
+            # Если используете чистый Docker, замените на свои команды запуска
+            docker-compose up -d --build
+
+            # 5. Очистка старых (висячих) образов, чтобы не забивать место на диске
+            docker image prune -f

@@ -9,15 +9,49 @@ function require_env(name) {
   return val.trim();
 }
 
-const API_ID_RAW = parseInt(process.env.API_ID, 10);
-if (!process.env.API_ID || isNaN(API_ID_RAW)) {
-  console.error("❌ API_ID должен быть числом и задан в .env");
-  process.exit(1);
+/**
+ * Ищет все переменные STRING_SESSION* и формирует массив сессий.
+ */
+function getSessions() {
+  const sessions = [];
+  const keys = Object.keys(process.env).filter((k) => k.startsWith("STRING_SESSION"));
+
+  // Сортируем: сначала основной STRING_SESSION, потом остальные
+  keys.sort((a, b) => {
+    if (a === "STRING_SESSION") return -1;
+    if (b === "STRING_SESSION") return 1;
+    return a.localeCompare(b);
+  });
+
+  for (const key of keys) {
+    const sessionStr = process.env[key].trim();
+    if (!sessionStr) continue;
+
+    // Пытаемся найти специфичные API_ID / API_HASH для этой сессии (например STRING_SESSION_2 -> API_ID_2)
+    // Если их нет — берем глобальные
+    const suffix = key.replace("STRING_SESSION", "");
+    const apiIdKey = suffix ? `API_ID${suffix}` : "API_ID";
+    const apiHashKey = suffix ? `API_HASH${suffix}` : "API_HASH";
+
+    sessions.push({
+      name: key,
+      stringSession: sessionStr,
+      apiId: parseInt(process.env[apiIdKey] || process.env.API_ID, 10),
+      apiHash: process.env[apiHashKey] || process.env.API_HASH,
+    });
+  }
+
+  return sessions;
 }
 
+const sessions = getSessions();
+
 export const config = {
-  // Telegram MTProto
-  apiId:         API_ID_RAW,
+  // Список всех доступных аккаунтов
+  sessions,
+
+  // Telegram MTProto (по умолчанию для основного клиента)
+  apiId:         parseInt(process.env.API_ID, 10),
   apiHash:       require_env("API_HASH"),
   stringSession: (process.env.STRING_SESSION || "").trim(),
 

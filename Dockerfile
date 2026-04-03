@@ -1,22 +1,18 @@
 FROM node:18-slim
 
+# Устанавливаем часовой пояс (полезно для логов бота)
+ENV TZ=Europe/Moscow
+
 WORKDIR /app
 
-# Copy package files
+# Сначала копируем только файлы зависимостей (для кэширования слоев)
 COPY package*.json ./
 
-# Install dependencies
+# Устанавливаем зависимости
 RUN npm install --production
 
-# Copy bot code
-COPY bot.js ./
+# Копируем ВЕСЬ остальной код проекта
+COPY . .
 
-# Set environment variables (should be provided at runtime)
-# ENV TG_TOKEN=...
-# ENV BOT_TOKEN=...
-# ENV API_URL=...
-# ENV CHAT_ID=...
-# ENV OPENROUTER_API_KEY=...
-# ENV YANDEX_MAPS_API_KEY=...
-
+# Если бот запускается командой node bot.js
 CMD ["node", "bot.js"]
