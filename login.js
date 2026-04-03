@@ -67,9 +67,9 @@ if (!apiId || !apiHash) {
   }
 //wddd
   console.log("\n✅ Вы успешно вошли!");
-  console.log("-------------------------------------------");
+  console.log("--------------------------------------------");
   console.log("ТВОЯ СЕССИЯ (скопируй её в .env как STRING_SESSION):");
   console.log(client.session.save());
-  console.log("-------------------------------------------");
+  console.log("--------------------------------------------");
   process.exit(0);
 })();
