@@ -4,7 +4,7 @@ import { NewMessage }     from "telegram/events/index.js";
 import { config }         from "./src/config.js";
 import { processMessage } from "./src/processor.js";
 
-// ─── HISTORY ──────────────────────────────────────────────────────────────────
+/// ─── HISTORY ──────────────────────────────────────────────────────────────────
 
 async function processHistory(client) {
   console.log(`📦 Читаю историю чата ${config.chatId} (последние 2ч, до ${config.historyLimit} сообщений)...`);
