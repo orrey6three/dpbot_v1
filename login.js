@@ -65,7 +65,7 @@ if (!apiId || !apiHash) {
     console.log("❌ Неверный выбор.");
     process.exit(1);
   }
-
+//wddd
   console.log("\n✅ Вы успешно вошли!");
   console.log("-------------------------------------------");
   console.log("ТВОЯ СЕССИЯ (скопируй её в .env как STRING_SESSION):");
