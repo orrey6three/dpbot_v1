@@ -128,11 +128,18 @@ export function createMtprotoTransport({ config, state }) {
 
     let reconnectTimer = null;
     let probeTimer = null;
+    let lastEventAt = Date.now();
+    let lastLoggedState = null;
 
     const messageEvent = new NewMessage({});
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
     const onNewMessage = async (event) => {
+      lastEventAt = Date.now();
+      const msgId = event.message.id;
+      const chatId = event.message.chatId?.toString() || "unknown";
+      logger.debug(`Incoming message received: ID=${msgId} from Chat=${chatId}`);
+      
       try {
         const handled = await processMessage(adaptMtprotoMessage(event.message));
         if (handled) {
@@ -156,7 +163,14 @@ export function createMtprotoTransport({ config, state }) {
     };
 
     const onConnectionState = (update) => {
-      logger.debug(`Connection state update: ${update.state}`);
+      lastEventAt = Date.now();
+      
+      // Логируем только если состояние реально изменилось, чтобы не спамить
+      if (update.state !== lastLoggedState) {
+        logger.debug(`Connection state: ${update.state}`);
+        lastLoggedState = update.state;
+      }
+
       if (update.state === UpdateConnectionState.connected) {
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
@@ -194,6 +208,15 @@ export function createMtprotoTransport({ config, state }) {
 
       probeTimer = setInterval(async () => {
         if (stopRequested) return;
+
+        // Если не было ВООБЩЕ никаких событий (даже пингов) более 10 минут
+        const idleTime = Date.now() - lastEventAt;
+        if (idleTime > 10 * 60 * 1000) {
+          logger.warn(`Update stream stalled (no events for ${Math.floor(idleTime/1000)}s). Restarting...`);
+          requestRestart(new Error("Update stream stalled"));
+          return;
+        }
+
         if (!client.connected) {
           requestRestart(new Error("MTProto клиент потерял соединение"));
           return;
@@ -205,6 +228,8 @@ export function createMtprotoTransport({ config, state }) {
             config.connectionProbeTimeoutMs,
             "updates.GetState"
           );
+          // GetState прошел успешно - это тоже событие активности
+          lastEventAt = Date.now();
         } catch (err) {
           logger.warn(`Watchdog probe failed: ${err.message}`);
           requestRestart(err);

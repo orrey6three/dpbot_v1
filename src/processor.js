@@ -87,9 +87,15 @@ export async function processMessage(message) {
   if (processedCache.has(chatId, message.id)) return false;
 
   const ageSeconds = Math.floor(Date.now() / 1000) - message.date;
-  if (ageSeconds > config.maxMsgAgeSeconds) return false;
+  if (ageSeconds > config.maxMsgAgeSeconds) {
+    logger.debug(`Skipping old message (age: ${ageSeconds}s, id: ${message.id})`);
+    return false;
+  }
 
-  if (!(await isTargetChat(message))) return false;
+  if (!(await isTargetChat(message))) {
+    logger.debug(`Skipping message from untargeted chat: ${chatId} (expected: ${normalizeId(config.chatId)})`);
+    return false;
+  }
 
   const author = await resolveAuthor(message);
   const text = await resolveText(message);
