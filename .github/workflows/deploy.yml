@@ -38,8 +38,8 @@ jobs:
             echo "${{ secrets.ENV_FILE }}" > .env
 
             # 4. Пересобираем и запускаем
-            # --force-recreate гарантирует, что контейнер будет обновлен из нового образа
-            docker-compose up -d --build --force-recreate
+            # Пробуем новую команду 'docker compose' (V2), если не выйдет - старую 'docker-compose'
+            (docker compose up -d --build --force-recreate || docker-compose up -d --build --force-recreate)
 
             # 5. Очистка старых (висячих) образов
             docker image prune -f
