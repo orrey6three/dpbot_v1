@@ -55,14 +55,25 @@ function getSessions() {
     const suffix = key.replace("STRING_SESSION", "");
     const apiIdKey = suffix ? `API_ID${suffix}` : "API_ID";
     const apiHashKey = suffix ? `API_HASH${suffix}` : "API_HASH";
+    const cityNameKey = suffix ? `CITY_NAME${suffix}` : "CITY_NAME";
+    const chatIdKey = suffix ? `CHAT_ID${suffix}` : "CHAT_ID";
+
     const apiId = optionalNumber(apiIdKey, optionalNumber("API_ID", NaN));
     const apiHash = optionalEnv(apiHashKey, optionalEnv("API_HASH"));
+
+    const cityNamesRaw = optionalEnv(cityNameKey, optionalEnv("DEFAULT_CITY"));
+    const chatIdsRaw = optionalEnv(chatIdKey, optionalEnv("CHAT_ID"));
+
+    const cityNames = cityNamesRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    const chatIds = chatIdsRaw.split(",").map((s) => s.trim()).filter(Boolean);
 
     sessions.push({
       name: key,
       stringSession,
       apiId,
       apiHash,
+      cityNames,
+      chatIds,
     });
   }
 

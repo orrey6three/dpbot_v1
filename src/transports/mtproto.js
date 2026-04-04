@@ -35,14 +35,15 @@ function isFatalSessionError(error) {
   );
 }
 
-async function processHistory(client, config) {
-  logger.log(`Reading chat history for ${config.chatId} (limit: ${config.historyLimit})...`);
+async function processHistory(client, config, options = {}) {
+  const chatId = config.chatId;
+  logger.log(`Reading chat history for ${chatId} (limit: ${config.historyLimit})...`);
 
   let messages;
   try {
-    messages = await client.getMessages(config.chatId, { limit: config.historyLimit });
+    messages = await client.getMessages(chatId, { limit: config.historyLimit });
   } catch (err) {
-    logger.error(`Failed to fetch history: ${err.message}`);
+    logger.error(`Failed to fetch history for ${chatId}: ${err.message}`);
     return;
   }
 
@@ -50,7 +51,7 @@ async function processHistory(client, config) {
   const fresh = messages.filter((message) => message.date >= cutoff).reverse();
 
   if (!fresh.length) {
-    logger.verbose("No fresh messages found in the last 2 hours");
+    logger.verbose(`No fresh messages found in the last 2 hours for ${chatId}`);
     return;
   }
 
@@ -59,7 +60,7 @@ async function processHistory(client, config) {
   for (let index = 0; index < fresh.length; index += config.historyBatchSize) {
     const batch = fresh.slice(index, index + config.historyBatchSize);
     const results = await Promise.allSettled(
-      batch.map((message) => processMessage(adaptMtprotoMessage(message)))
+      batch.map((message) => processMessage(adaptMtprotoMessage(message), options))
     );
 
     processed += results.filter(
@@ -71,7 +72,9 @@ async function processHistory(client, config) {
     }
   }
 
-  logger.log(`History processing complete: ${processed} new posts created`);
+  if (processed > 0) {
+    logger.log(`History processing for ${chatId} complete: ${processed} new posts created`);
+  }
 }
 
 export function createMtprotoTransport({ config, state }) {
@@ -134,20 +137,33 @@ export function createMtprotoTransport({ config, state }) {
     const messageEvent = new NewMessage({});
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
+    // Создаем маппинг чат -> город для этой сессии
+    const cityMappings = {};
+    const targetChatIds = sessionCfg.chatIds || [];
+    const cityNames = sessionCfg.cityNames || [];
+    
+    targetChatIds.forEach((id, idx) => {
+      const normalizedId = id.replace(/^-100/, "");
+      cityMappings[normalizedId] = cityNames[idx] || cityNames[0] || config.defaultCity;
+    });
+
     const onNewMessage = async (event) => {
       lastEventAt = Date.now();
       const msgId = event.message.id;
       const chatId = event.message.chatId?.toString() || "unknown";
-      logger.debug(`Incoming message received: ID=${msgId} from Chat=${chatId}`);
+      logger.debug(`[${sessionCfg.name}] Incoming message: ID=${msgId} from Chat=${chatId}`);
       
       try {
-        const handled = await processMessage(adaptMtprotoMessage(event.message));
+        const handled = await processMessage(adaptMtprotoMessage(event.message), {
+          targetChatIds,
+          cityMappings,
+        });
         if (handled) {
           state.lastMessageAt = new Date().toISOString();
         }
       } catch (err) {
         state.lastError = err.message;
-        logger.error(`Event processing error: ${err.message}`);
+        logger.error(`[${sessionCfg.name}] Event processing error: ${err.message}`);
       }
     };
 
@@ -165,9 +181,8 @@ export function createMtprotoTransport({ config, state }) {
     const onConnectionState = (update) => {
       lastEventAt = Date.now();
       
-      // Логируем только если состояние реально изменилось, чтобы не спамить
       if (update.state !== lastLoggedState) {
-        logger.debug(`Connection state: ${update.state}`);
+        logger.debug(`[${sessionCfg.name}] Connection state: ${update.state}`);
         lastLoggedState = update.state;
       }
 
@@ -199,9 +214,9 @@ export function createMtprotoTransport({ config, state }) {
     try {
       await client.connect();
       const me = await client.getMe();
-      state.activeAccount = me.username || me.firstName || sessionCfg.name;
+      const accountLabel = me.username || me.firstName || sessionCfg.name;
       state.transportHealthy = true;
-      logger.log(`Successfully connected as @${state.activeAccount}`);
+      logger.log(`Successfully connected session ${sessionCfg.name} as @${accountLabel}`);
 
       client.addEventHandler(onNewMessage, messageEvent);
       client.addEventHandler(onConnectionState, connectionEvent);
@@ -209,10 +224,9 @@ export function createMtprotoTransport({ config, state }) {
       probeTimer = setInterval(async () => {
         if (stopRequested) return;
 
-        // Если не было ВООБЩЕ никаких событий (даже пингов) более 10 минут
         const idleTime = Date.now() - lastEventAt;
         if (idleTime > 10 * 60 * 1000) {
-          logger.warn(`Update stream stalled (no events for ${Math.floor(idleTime/1000)}s). Restarting...`);
+          logger.warn(`[${sessionCfg.name}] Update stream stalled. Restarting...`);
           requestRestart(new Error("Update stream stalled"));
           return;
         }
@@ -228,16 +242,23 @@ export function createMtprotoTransport({ config, state }) {
             config.connectionProbeTimeoutMs,
             "updates.GetState"
           );
-          // GetState прошел успешно - это тоже событие активности
           lastEventAt = Date.now();
         } catch (err) {
-          logger.warn(`Watchdog probe failed: ${err.message}`);
+          logger.warn(`[${sessionCfg.name}] Watchdog probe failed: ${err.message}`);
           requestRestart(err);
         }
       }, config.connectionProbeIntervalMs);
 
-      await processHistory(client, config);
-      logger.log("Listening for new messages...");
+      // Обработка истории для всех чатов этой сессии
+      for (const chatId of targetChatIds) {
+        await processHistory(
+          client,
+          { ...config, chatId },
+          { targetChatIds, cityMappings }
+        );
+      }
+      
+      logger.log(`[${sessionCfg.name}] Listening for new messages in ${targetChatIds.length} chats...`);
 
       const outcome = await lifecycle.promise;
       return outcome;
@@ -272,29 +293,30 @@ export function createMtprotoTransport({ config, state }) {
         throw new Error("Сессии не найдены. Запусти: node login.js");
       }
 
-      let index = 0;
+      logger.log(`Starting ${config.sessions.length} parallel sessions...`);
 
-      while (!stopRequested) {
-        if (index >= config.sessions.length) {
-          throw new Error("Все доступные аккаунты не работают (баны или ошибки).");
+      const sessionPromises = config.sessions.map(async (sessionCfg, index) => {
+        while (!stopRequested) {
+          const outcome = await runSession(sessionCfg, index);
+          if (stopRequested) break;
+
+          if (outcome?.switchAccount) {
+            logger.error(`Session "${sessionCfg.name}" is FATAL: ${outcome?.reason?.message}. Stopping this session worker.`);
+            break; 
+          } else {
+            const reason = outcome?.reason?.message || "unknown reason";
+            logger.warn(`Restarting session "${sessionCfg.name}" in ${config.reconnectDelayMs}ms. Reason: ${reason}`);
+            await sleep(config.reconnectDelayMs);
+          }
         }
+      });
 
-        const outcome = await runSession(config.sessions[index], index);
-        if (stopRequested) return;
-
-        if (outcome?.switchAccount) {
-          logger.warn(`Session "${config.sessions[index].name}" is unavailable (banned or active elsewhere). Switching...`);
-          index += 1;
-        } else {
-          const reason = outcome?.reason?.message || "unknown reason";
-          logger.warn(`Restarting session in ${config.reconnectDelayMs}ms. Reason: ${reason}`);
-          await sleep(config.reconnectDelayMs);
-        }
-      }
+      await Promise.all(sessionPromises);
     },
     async stop() {
       stopRequested = true;
-      await stopCurrentClient();
+      // В режиме параллельных сессий currentClient хранит только последний запущенный, 
+      // но runSession сам закрывает клиент в finally.
     },
   };
 }

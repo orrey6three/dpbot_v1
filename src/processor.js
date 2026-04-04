@@ -18,16 +18,6 @@ function normalizeId(id) {
   return String(id).replace(/^-100/, "");
 }
 
-async function isTargetChat(message) {
-  const target = normalizeId(config.chatId);
-  const current = normalizeId(message.chatId ?? "");
-  if (current === target) return true;
-  const chatUsername = message.chatUsername || (await message.getChatUsername?.()) || "";
-  if (chatUsername && chatUsername.toLowerCase() === target.replace("@", "").toLowerCase()) {
-    return true;
-  }
-  return false;
-}
 
 async function resolveText(message) {
   const chatId = normalizeId(message.chatId ?? "");
@@ -78,9 +68,10 @@ async function resolveAuthor(message) {
 
 /**
  * @param {NormalizedMessage} message
+ * @param {{ targetChatIds?: string[], cityMappings?: Record<string, string> }} options
  * @returns {Promise<boolean>}
  */
-export async function processMessage(message) {
+export async function processMessage(message, options = {}) {
   if (!message?.text) return false;
 
   const chatId = normalizeId(message.chatId ?? "");
@@ -92,15 +83,21 @@ export async function processMessage(message) {
     return false;
   }
 
-  if (!(await isTargetChat(message))) {
-    logger.debug(`Skipping message from untargeted chat: ${chatId} (expected: ${normalizeId(config.chatId)})`);
+  const targetIds = (options.targetChatIds || [config.chatId]).map(normalizeId);
+  const isTarget = targetIds.includes(chatId);
+
+  if (!isTarget) {
+    logger.debug(`Skipping message from untargeted chat: ${chatId} (expected one of: ${targetIds.join(", ")})`);
     return false;
   }
 
   const author = await resolveAuthor(message);
   const text = await resolveText(message);
   
-  logger.log(`Processing message from ${author}: "${text.slice(0, 50)}..."`);
+  // Определяем город для этого чата
+  const cityName = options.cityMappings?.[chatId] || config.defaultCity;
+
+  logger.log(`[${cityName}] Processing message from ${author}: "${text.slice(0, 50)}..."`);
 
   processedCache.add(chatId, message.id);
 
@@ -121,10 +118,10 @@ export async function processMessage(message) {
 
   const results = await Promise.allSettled(
     posts.map(async ({ street, type }) => {
-      const coords = await geocodeStreet(street);
+      const coords = await geocodeStreet(street, cityName);
       const result = await createPost({
         street,
-        city: config.defaultCity,
+        city: cityName,
         type,
         comment: text,
         coords,
