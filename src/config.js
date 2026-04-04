@@ -124,6 +124,7 @@ export const config = {
   processedCacheLimit: optionalNumber("PROCESSED_CACHE_LIMIT", 5000),
   processedCacheTtlMs: optionalNumber("PROCESSED_CACHE_TTL_MS", 7 * 24 * 60 * 60 * 1000),
   stateFilePath: optionalEnv("STATE_FILE_PATH", ".runtime/bot-state.json"),
+  apiTimeoutMs: optionalNumber("API_TIMEOUT_MS", 30000),
 };
 
 export function getWebhookUrl() {

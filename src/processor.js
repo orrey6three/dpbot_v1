@@ -3,6 +3,9 @@ import { MessageCache, ProcessedCache } from "./cache.js";
 import { parseMessageWithAI } from "./ai.js";
 import { geocodeStreet } from "./geocoder.js";
 import { createPost } from "./api.js";
+import { Logger } from "./logger.js";
+
+const logger = new Logger("Processor");
 
 const msgCache = new MessageCache(200);
 const processedCache = new ProcessedCache(
@@ -88,23 +91,27 @@ export async function processMessage(message) {
 
   if (!(await isTargetChat(message))) return false;
 
-  processedCache.add(chatId, message.id);
-
-  const text = await resolveText(message);
   const author = await resolveAuthor(message);
+  const text = await resolveText(message);
+  
+  logger.log(`Processing message from ${author}: "${text.slice(0, 50)}..."`);
+
+  processedCache.add(chatId, message.id);
 
   let posts;
   try {
     posts = await parseMessageWithAI(text);
   } catch (err) {
-    console.error(`[AI ERR] "${text.slice(0, 30)}...":`, err.message);
+    logger.error(`AI Analysis failed: ${err.message}`);
     return false;
   }
 
-  if (!posts.length) return false;
+  if (!posts.length) {
+    logger.verbose("No relevant tags found in the message");
+    return false;
+  }
 
-  console.log(`[MSG] "${text.slice(0, 60)}..." от ${author}`);
-  console.log(`[AI] ${posts.length} метка(ок):`, posts.map((post) => `${post.type}:${post.street}`).join(", "));
+  logger.log(`Found ${posts.length} entries. Starting geocoding and post creation...`);
 
   const results = await Promise.allSettled(
     posts.map(async ({ street, type }) => {
@@ -121,12 +128,18 @@ export async function processMessage(message) {
     })
   );
 
+  let successCount = 0;
   for (const result of results) {
     if (result.status === "fulfilled") {
-      console.log(`[OK] id=${result.value.id} ${result.value.type}:${result.value.street}`);
+      successCount++;
+      logger.verbose(`Created post id=${result.value.id} [${result.value.type}] ${result.value.street}`);
     } else {
-      console.error("[ERR]", result.reason?.message);
+      logger.error(`Post creation error: ${result.reason?.message}`);
     }
+  }
+
+  if (successCount > 0) {
+    logger.log(`Successfully handled ${successCount}/${posts.length} entries`);
   }
 
   return true;

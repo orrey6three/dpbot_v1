@@ -5,6 +5,9 @@ import { Raw } from "telegram/events/Raw.js";
 import { UpdateConnectionState } from "telegram/network/index.js";
 import { adaptMtprotoMessage } from "../messages.js";
 import { processMessage } from "../processor.js";
+import { Logger } from "../logger.js";
+
+const logger = new Logger("MTProto");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,20 +30,19 @@ function isFatalSessionError(error) {
   return (
     message.includes("SESSION_REVOKED") ||
     message.includes("USER_DEACTIVATED") ||
-    message.includes("AUTH_KEY_UNREGISTERED")
+    message.includes("AUTH_KEY_UNREGISTERED") ||
+    message.includes("AUTH_KEY_DUPLICATED")
   );
 }
 
 async function processHistory(client, config) {
-  console.log(
-    `📦 Читаю историю чата ${config.chatId} (последние 2ч, до ${config.historyLimit} сообщений)...`
-  );
+  logger.log(`Reading chat history for ${config.chatId} (limit: ${config.historyLimit})...`);
 
   let messages;
   try {
     messages = await client.getMessages(config.chatId, { limit: config.historyLimit });
   } catch (err) {
-    console.error("❌ Не удалось получить историю:", err.message);
+    logger.error(`Failed to fetch history: ${err.message}`);
     return;
   }
 
@@ -48,7 +50,7 @@ async function processHistory(client, config) {
   const fresh = messages.filter((message) => message.date >= cutoff).reverse();
 
   if (!fresh.length) {
-    console.log("ℹ️  Свежих сообщений за последние 2ч нет.");
+    logger.verbose("No fresh messages found in the last 2 hours");
     return;
   }
 
@@ -69,7 +71,7 @@ async function processHistory(client, config) {
     }
   }
 
-  console.log(`🏁 История: ${processed} новых сообщений обработано из ${fresh.length} свежих.`);
+  logger.log(`History processing complete: ${processed} new posts created`);
 }
 
 export function createMtprotoTransport({ config, state }) {
@@ -89,7 +91,7 @@ export function createMtprotoTransport({ config, state }) {
       throw new Error(`Некорректные настройки для ${sessionCfg.name}`);
     }
 
-    console.log(`\n🚀 Пытаюсь запустить [${index + 1}/${config.sessions.length}]: ${sessionCfg.name}...`);
+    logger.log(`Starting account [${index + 1}/${config.sessions.length}]: ${sessionCfg.name}`);
 
     const client = new TelegramClient(
       new StringSession(sessionCfg.stringSession),
@@ -138,7 +140,7 @@ export function createMtprotoTransport({ config, state }) {
         }
       } catch (err) {
         state.lastError = err.message;
-        console.error("[EVENT ERROR]", err.message);
+        logger.error(`Event processing error: ${err.message}`);
       }
     };
 
@@ -154,6 +156,7 @@ export function createMtprotoTransport({ config, state }) {
     };
 
     const onConnectionState = (update) => {
+      logger.debug(`Connection state update: ${update.state}`);
       if (update.state === UpdateConnectionState.connected) {
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
@@ -184,7 +187,7 @@ export function createMtprotoTransport({ config, state }) {
       const me = await client.getMe();
       state.activeAccount = me.username || me.firstName || sessionCfg.name;
       state.transportHealthy = true;
-      console.log(`✅ Подключен как: ${state.activeAccount}`);
+      logger.log(`Successfully connected as @${state.activeAccount}`);
 
       client.addEventHandler(onNewMessage, messageEvent);
       client.addEventHandler(onConnectionState, connectionEvent);
@@ -203,14 +206,13 @@ export function createMtprotoTransport({ config, state }) {
             "updates.GetState"
           );
         } catch (err) {
-          console.error("[WATCHDOG]", err.message);
+          logger.warn(`Watchdog probe failed: ${err.message}`);
           requestRestart(err);
         }
       }, config.connectionProbeIntervalMs);
 
       await processHistory(client, config);
-
-      console.log("📡 Слушаю новые сообщения. Ctrl+C для остановки.\n");
+      logger.log("Listening for new messages...");
 
       const outcome = await lifecycle.promise;
       return outcome;
@@ -256,11 +258,11 @@ export function createMtprotoTransport({ config, state }) {
         if (stopRequested) return;
 
         if (outcome?.switchAccount) {
-          console.log("⚠️  Сессия мертва или аккаунт забанен. Пробую следующий...");
+          logger.warn(`Session "${config.sessions[index].name}" is unavailable (banned or active elsewhere). Switching...`);
           index += 1;
         } else {
-          const reason = outcome?.reason?.message || "неизвестная ошибка";
-          console.log(`🔄 Перезапускаю MTProto через ${config.reconnectDelayMs}мс: ${reason}`);
+          const reason = outcome?.reason?.message || "unknown reason";
+          logger.warn(`Restarting session in ${config.reconnectDelayMs}ms. Reason: ${reason}`);
           await sleep(config.reconnectDelayMs);
         }
       }

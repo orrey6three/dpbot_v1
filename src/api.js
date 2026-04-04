@@ -1,5 +1,8 @@
 import fetch from "node-fetch";
 import { config } from "./config.js";
+import { Logger } from "./logger.js";
+
+const logger = new Logger("BackendAPI");
 
 /**
  * HTTP-запрос с автоматическим retry и exponential backoff.
@@ -11,13 +14,13 @@ async function fetchWithRetry(url, options, { retries = 3, backoffMs = 500 } = {
   let lastError;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const res = await fetch(url, options);
+      const res = await fetch(url, { ...options, timeout: config.apiTimeoutMs });
       return res;
     } catch (err) {
       lastError = err;
       if (attempt < retries - 1) {
         const delay = backoffMs * 2 ** attempt;
-        console.warn(`[API] Retry ${attempt + 1}/${retries - 1} after ${delay}ms...`);
+        logger.warn(`Retry ${attempt + 1}/${retries - 1} after ${delay}ms... (Error: ${err.message})`);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -35,6 +38,7 @@ async function fetchWithRetry(url, options, { retries = 3, backoffMs = 500 } = {
  * @returns {Promise<object>} ответ сервера
  */
 export async function createPost(payload) {
+  const start = Date.now();
   const res = await fetchWithRetry(
     config.apiUrl,
     {
@@ -52,6 +56,13 @@ export async function createPost(payload) {
   );
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  const duration = Date.now() - start;
+
+  if (!res.ok) {
+    logger.error(`Failed to create post: ${data.error || `HTTP ${res.status}`}`);
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  logger.debug(`Post created successfully in ${duration}ms (id=${data.post?.id})`);
   return data;
 }

@@ -1,5 +1,8 @@
 import fetch from "node-fetch";
 import { config } from "./config.js";
+import { Logger } from "./logger.js";
+
+const logger = new Logger("AI");
 
 const SYSTEM_PROMPT = `Ты парсер сообщений из чата водителей города Шумиха (Россия).
 Люди пишут про посты ДПС и патрули на улицах. Твоя задача — извлечь структурированные данные.
@@ -38,8 +41,10 @@ const SYSTEM_PROMPT = `Ты парсер сообщений из чата вод
  * @returns {Promise<Array<{ street: string, type: "ДПС" | "Чисто" }>>}
  */
 export async function parseMessageWithAI(text) {
+  const start = Date.now();
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method:  "POST",
+    timeout: config.apiTimeoutMs,
     headers: {
       "Authorization": `Bearer ${config.openrouterKey}`,
       "Content-Type":  "application/json",
@@ -74,8 +79,13 @@ export async function parseMessageWithAI(text) {
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    console.error("[AI] Failed to parse JSON:", cleaned);
+    logger.error(`Failed to parse AI JSON: ${cleaned.slice(0, 50)}...`);
     return [];
+  }
+
+  const duration = Date.now() - start;
+  if (parsed.posts?.length > 0) {
+    logger.debug(`Parsed ${parsed.posts.length} posts in ${duration}ms`);
   }
 
   if (!Array.isArray(parsed.posts)) return [];

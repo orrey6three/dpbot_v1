@@ -2,6 +2,9 @@ import fetch from "node-fetch";
 import { adaptBotApiMessage } from "../messages.js";
 import { processMessage } from "../processor.js";
 import { getWebhookUrl } from "../config.js";
+import { Logger } from "../logger.js";
+
+const logger = new Logger("Webhook");
 
 async function telegramApi(config, method, payload = {}) {
   const res = await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/${method}`, {
@@ -24,12 +27,12 @@ export function createWebhookTransport({ config, state }) {
   return {
     async start() {
       if (!config.telegramBotToken) {
-        throw new Error("Для webhook режима нужен TELEGRAM_BOT_TOKEN или TG_TOKEN");
+        throw new Error("TELEGRAM_BOT_TOKEN or TG_TOKEN is required for webhook mode");
       }
 
       const webhookUrl = getWebhookUrl();
       if (!webhookUrl) {
-        throw new Error("Для webhook режима нужен WEBHOOK_PUBLIC_URL");
+        throw new Error("WEBHOOK_PUBLIC_URL is required for webhook mode");
       }
 
       const me = await telegramApi(config, "getMe");
@@ -45,8 +48,8 @@ export function createWebhookTransport({ config, state }) {
       }
 
       state.transportHealthy = true;
-      console.log(`✅ Webhook активирован: ${webhookUrl}`);
-      console.log(`🤖 Подключен как бот: ${state.activeAccount}`);
+      logger.log(`Webhook activated: ${webhookUrl}`);
+      logger.log(`Connected as @${state.activeAccount}`);
     },
     async stop() {
       state.transportHealthy = false;

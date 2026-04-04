@@ -1,5 +1,8 @@
 import http from "node:http";
 import { URL } from "node:url";
+import { Logger } from "./logger.js";
+
+const logger = new Logger("HTTPServer");
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -82,7 +85,7 @@ export function createServer({ config, state, onWebhookUpdate }) {
         queueMicrotask(() => {
           Promise.resolve(onWebhookUpdate?.(update)).catch((err) => {
             state.lastError = err.message;
-            console.error("[WEBHOOK]", err.message);
+            logger.error(`Webhook error: ${err.message}`);
           });
         });
       } catch (err) {
@@ -101,7 +104,7 @@ export function createServer({ config, state, onWebhookUpdate }) {
         server.once("error", reject);
         server.listen(config.httpPort, "0.0.0.0", () => {
           server.removeListener("error", reject);
-          console.log(`🌐 HTTP сервер запущен на порту ${config.httpPort}`);
+          logger.log(`Server is listening on port ${config.httpPort}`);
           resolve();
         });
       });
