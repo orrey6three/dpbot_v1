@@ -1,22 +1,47 @@
 import "dotenv/config";
 
-function require_env(name) {
-  const val = process.env[name];
-  if (!val) {
+function requiredEnv(name) {
+  const value = (process.env[name] || "").trim();
+  if (!value) {
     console.error(`❌ Отсутствует обязательная переменная окружения: ${name}`);
     process.exit(1);
   }
-  return val.trim();
+  return value;
 }
 
-/**
- * Ищет все переменные STRING_SESSION* и формирует массив сессий.
- */
+function optionalEnv(name, fallback = "") {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
+function optionalNumber(name, fallback) {
+  const raw = optionalEnv(name);
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function optionalBoolean(name, fallback = false) {
+  const raw = optionalEnv(name).toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
+function trimSlashes(value) {
+  return value.replace(/\/+$/, "");
+}
+
+function ensureLeadingSlash(value) {
+  if (!value) return "/";
+  return value.startsWith("/") ? value : `/${value}`;
+}
+
 function getSessions() {
   const sessions = [];
-  const keys = Object.keys(process.env).filter((k) => k.startsWith("STRING_SESSION"));
+  const keys = Object.keys(process.env).filter((key) => key.startsWith("STRING_SESSION"));
 
-  // Сортируем: сначала основной STRING_SESSION, потом остальные
   keys.sort((a, b) => {
     if (a === "STRING_SESSION") return -1;
     if (b === "STRING_SESSION") return 1;
@@ -24,53 +49,84 @@ function getSessions() {
   });
 
   for (const key of keys) {
-    const sessionStr = process.env[key].trim();
-    if (!sessionStr) continue;
+    const stringSession = optionalEnv(key);
+    if (!stringSession) continue;
 
-    // Пытаемся найти специфичные API_ID / API_HASH для этой сессии (например STRING_SESSION_2 -> API_ID_2)
-    // Если их нет — берем глобальные
     const suffix = key.replace("STRING_SESSION", "");
     const apiIdKey = suffix ? `API_ID${suffix}` : "API_ID";
     const apiHashKey = suffix ? `API_HASH${suffix}` : "API_HASH";
+    const apiId = optionalNumber(apiIdKey, optionalNumber("API_ID", NaN));
+    const apiHash = optionalEnv(apiHashKey, optionalEnv("API_HASH"));
 
     sessions.push({
       name: key,
-      stringSession: sessionStr,
-      apiId: parseInt(process.env[apiIdKey] || process.env.API_ID, 10),
-      apiHash: process.env[apiHashKey] || process.env.API_HASH,
+      stringSession,
+      apiId,
+      apiHash,
     });
   }
 
   return sessions;
 }
 
+const telegramBotToken = optionalEnv("TELEGRAM_BOT_TOKEN", optionalEnv("TG_TOKEN"));
+const webhookPublicUrl = trimSlashes(optionalEnv("WEBHOOK_PUBLIC_URL", optionalEnv("APP_URL")));
+const requestedMode = optionalEnv("TELEGRAM_MODE").toLowerCase();
+const mode = requestedMode || (telegramBotToken && webhookPublicUrl ? "webhook" : "mtproto");
+
+const port = optionalNumber("PORT", optionalNumber("WEBHOOK_PORT", 3001));
+const healthPath = ensureLeadingSlash(optionalEnv("HEALTH_PATH", "/health"));
+const statusPath = ensureLeadingSlash(optionalEnv("STATUS_PATH", "/status"));
+const webhookPath = ensureLeadingSlash(optionalEnv("WEBHOOK_PATH", "/telegram/webhook"));
+const webhookSecretToken = optionalEnv("WEBHOOK_SECRET_TOKEN", optionalEnv("BOT_TOKEN"));
+
 const sessions = getSessions();
 
 export const config = {
-  // Список всех доступных аккаунтов
+  mode,
   sessions,
 
-  // Telegram MTProto (по умолчанию для основного клиента)
-  apiId:         parseInt(process.env.API_ID, 10),
-  apiHash:       require_env("API_HASH"),
-  stringSession: (process.env.STRING_SESSION || "").trim(),
+  apiId: optionalNumber("API_ID", NaN),
+  apiHash: optionalEnv("API_HASH"),
+  stringSession: optionalEnv("STRING_SESSION"),
 
-  // Целевой чат (ID берём из list_chats.js)
-  chatId:        (process.env.CHAT_ID || "-1002027583613").trim(),
+  telegramBotToken,
+  webhookPublicUrl,
+  webhookPath,
+  webhookSecretToken,
+  webhookAllowedUpdates: ["message", "channel_post"],
+  webhookDropPendingUpdates: optionalBoolean("WEBHOOK_DROP_PENDING_UPDATES", false),
+  webhookSetOnStart: optionalBoolean("WEBHOOK_SET_ON_START", true),
 
-  // Бэкенд API
-  apiUrl:        (process.env.API_URL || "http://localhost:3000/api/patrol").trim(),
-  botToken:      (process.env.BOT_TOKEN || "change-me-bot-secret").trim(),
+  httpPort: port,
+  healthPath,
+  statusPath,
 
-  // Внешние сервисы
-  openrouterKey: require_env("OPENROUTER_API_KEY"),
-  yandexKey:     require_env("YANDEX_MAPS_API_KEY"),
+  chatId: optionalEnv("CHAT_ID", "-1002027583613"),
 
-  // Домен по умолчанию
-  defaultCity:   process.env.DEFAULT_CITY || "Шумиха",
+  apiUrl: optionalEnv("API_URL", "http://localhost:3000/api/patrol"),
+  botToken: optionalEnv("BOT_TOKEN", "change-me-bot-secret"),
 
-  // Ограничения
-  maxMsgAgeSeconds: 2 * 60 * 60, // 2 часа
-  historyLimit:     100,
-  historyBatchSize: 5,            // параллельно обрабатываем по 5 сообщений из истории
+  openrouterKey: requiredEnv("OPENROUTER_API_KEY"),
+  yandexKey: requiredEnv("YANDEX_MAPS_API_KEY"),
+
+  defaultCity: optionalEnv("DEFAULT_CITY", "Шумиха"),
+
+  maxMsgAgeSeconds: optionalNumber("MAX_MSG_AGE_SECONDS", 2 * 60 * 60),
+  historyLimit: optionalNumber("HISTORY_LIMIT", 100),
+  historyBatchSize: optionalNumber("HISTORY_BATCH_SIZE", 5),
+
+  connectionGraceMs: optionalNumber("CONNECTION_GRACE_MS", 15000),
+  connectionProbeIntervalMs: optionalNumber("CONNECTION_PROBE_INTERVAL_MS", 60000),
+  connectionProbeTimeoutMs: optionalNumber("CONNECTION_PROBE_TIMEOUT_MS", 10000),
+  reconnectDelayMs: optionalNumber("RECONNECT_DELAY_MS", 10000),
+
+  processedCacheLimit: optionalNumber("PROCESSED_CACHE_LIMIT", 5000),
+  processedCacheTtlMs: optionalNumber("PROCESSED_CACHE_TTL_MS", 7 * 24 * 60 * 60 * 1000),
+  stateFilePath: optionalEnv("STATE_FILE_PATH", ".runtime/bot-state.json"),
 };
+
+export function getWebhookUrl() {
+  if (!config.webhookPublicUrl) return "";
+  return new URL(config.webhookPath, `${config.webhookPublicUrl}/`).toString();
+}

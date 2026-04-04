@@ -7,6 +7,10 @@ services:
     restart: always
     env_file:
       - .env
+    ports:
+      - "${PORT:-3001}:${PORT:-3001}"
+    volumes:
+      - bot_runtime:/app/.runtime
     logging:
       driver: "json-file"
       options:
@@ -21,3 +25,6 @@ services:
     ports:
       - 8080:8080
     restart: always
+
+volumes:
+  bot_runtime:

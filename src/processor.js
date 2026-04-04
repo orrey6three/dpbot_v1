@@ -1,40 +1,36 @@
-import { config }           from "./config.js";
+import { config } from "./config.js";
 import { MessageCache, ProcessedCache } from "./cache.js";
-import { parseMessageWithAI }           from "./ai.js";
-import { geocodeStreet }                from "./geocoder.js";
-import { createPost }                   from "./api.js";
+import { parseMessageWithAI } from "./ai.js";
+import { geocodeStreet } from "./geocoder.js";
+import { createPost } from "./api.js";
 
-const msgCache       = new MessageCache(200);
-const processedCache = new ProcessedCache();
+const msgCache = new MessageCache(200);
+const processedCache = new ProcessedCache(
+  config.processedCacheLimit,
+  config.processedCacheTtlMs,
+  config.stateFilePath
+);
 
-/**
- * Нормализует chatId для сравнения с config.chatId.
- * GramJS может вернуть ID в разных форматах (-100XXX, -XXX, XXX).
- */
 function normalizeId(id) {
   return String(id).replace(/^-100/, "");
 }
 
-/**
- * Определяет, относится ли сообщение к целевому чату.
- */
-function isTargetChat(message, chat) {
-  const target  = normalizeId(config.chatId);
+async function isTargetChat(message) {
+  const target = normalizeId(config.chatId);
   const current = normalizeId(message.chatId ?? "");
   if (current === target) return true;
-  if (chat.username && chat.username.toLowerCase() === target.replace("@", "").toLowerCase()) return true;
+  const chatUsername = message.chatUsername || (await message.getChatUsername?.()) || "";
+  if (chatUsername && chatUsername.toLowerCase() === target.replace("@", "").toLowerCase()) {
+    return true;
+  }
   return false;
 }
 
-/**
- * Восстанавливает текст с учётом цепочки ответов.
- * @returns {Promise<string>}
- */
-async function resolveText(message, chatId) {
-  let text = message.message;
+async function resolveText(message) {
+  const chatId = normalizeId(message.chatId ?? "");
+  const text = message.text;
+  const parentId = message.replyToMessageId ?? null;
 
-  const replyTo = message.replyTo;
-  const parentId = replyTo?.replyToMsgId ?? null;
   msgCache.set(chatId, message.id, text, parentId);
 
   if (!parentId) return text;
@@ -44,65 +40,59 @@ async function resolveText(message, chatId) {
     return chain.join(". ");
   }
 
-  // В кэше нет — пробуем запросить у Telegram
   try {
-    const parent = await message.getReplyMessage();
-    if (parent?.message) {
-      return `${parent.message}. ${text}`;
+    const parentText = await message.getReplyText();
+    if (parentText) {
+      return `${parentText}. ${text}`;
     }
   } catch (_) {}
 
   return text;
 }
 
-/**
- * Получает имя отправителя.
- * @returns {Promise<string>}
- */
 async function resolveAuthor(message) {
   try {
-    const sender = await message.getSender();
-    if (!sender) return "Аноним";
-    return sender.username || sender.firstName || "Аноним";
+    const author = await message.getAuthor();
+    return author || "Аноним";
   } catch (_) {
     return "Аноним";
   }
 }
 
 /**
- * Основная точка обработки одного сообщения.
- * Возвращает false если сообщение было пропущено, true — если обработано.
- * @param {import("telegram").Api.Message} message
+ * @typedef {{
+ *   id: number,
+ *   chatId: string,
+ *   chatUsername: string,
+ *   text: string,
+ *   date: number,
+ *   replyToMessageId: number | null,
+ *   getReplyText: () => Promise<string | null>,
+ *   getAuthor: () => Promise<string>,
+ *   getChatUsername?: () => Promise<string>,
+ * }} NormalizedMessage
+ */
+
+/**
+ * @param {NormalizedMessage} message
  * @returns {Promise<boolean>}
  */
 export async function processMessage(message) {
-  if (!message?.message) return false;
+  if (!message?.text) return false;
 
-  // 1. Дедупликация
-  const chatId = String(message.chatId ?? "");
+  const chatId = normalizeId(message.chatId ?? "");
   if (processedCache.has(chatId, message.id)) return false;
 
-  // 2. Фильтр по времени
   const ageSeconds = Math.floor(Date.now() / 1000) - message.date;
   if (ageSeconds > config.maxMsgAgeSeconds) return false;
 
-  // 3. Проверка целевого чата
-  let chat;
-  try {
-    chat = await message.getChat();
-  } catch (_) {
-    return false;
-  }
-  if (!isTargetChat(message, chat)) return false;
+  if (!(await isTargetChat(message))) return false;
 
-  // Помечаем как обрабатываемое ДО async-операций, чтобы не было race condition
   processedCache.add(chatId, message.id);
 
-  // 4. Восстановление контекста цепочки
-  const text   = await resolveText(message, chatId);
+  const text = await resolveText(message);
   const author = await resolveAuthor(message);
 
-  // 5. AI-парсинг
   let posts;
   try {
     posts = await parseMessageWithAI(text);
@@ -114,9 +104,8 @@ export async function processMessage(message) {
   if (!posts.length) return false;
 
   console.log(`[MSG] "${text.slice(0, 60)}..." от ${author}`);
-  console.log(`[AI] ${posts.length} метка(ок):`, posts.map((p) => `${p.type}:${p.street}`).join(", "));
+  console.log(`[AI] ${posts.length} метка(ок):`, posts.map((post) => `${post.type}:${post.street}`).join(", "));
 
-  // 6. Геокодинг + создание постов — параллельно для всех улиц
   const results = await Promise.allSettled(
     posts.map(async ({ street, type }) => {
       const coords = await geocodeStreet(street);
@@ -132,11 +121,11 @@ export async function processMessage(message) {
     })
   );
 
-  for (const r of results) {
-    if (r.status === "fulfilled") {
-      console.log(`[OK] id=${r.value.id} ${r.value.type}:${r.value.street}`);
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      console.log(`[OK] id=${result.value.id} ${result.value.type}:${result.value.street}`);
     } else {
-      console.error(`[ERR]`, r.reason?.message);
+      console.error("[ERR]", result.reason?.message);
     }
   }
 
