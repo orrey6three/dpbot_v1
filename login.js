@@ -28,8 +28,10 @@ if (!apiId || !apiHash) {
     // Вход по номеру
     await client.start({
       phoneNumber: async () => await input.text("Введите номер телефона: "),
-      password: async () => await input.text("Введите пароль (если включен 2FA): "),
-      phoneCode: async () => await input.text("Введите код (из Telegram, SMS или Почты): "),
+      password: async () =>
+        await input.text("Введите пароль (если включен 2FA): "),
+      phoneCode: async () =>
+        await input.text("Введите код (из Telegram, SMS или Почты): "),
       onError: (err) => console.error("❌ Ошибка:", err.message),
     });
   } else if (choice === "2") {
@@ -44,18 +46,19 @@ if (!apiId || !apiHash) {
           qrCode: async (code) => {
             const token = code.token.toString("base64url");
             const url = `tg://login?token=${token}`;
-            console.log("\n📷 Отсканируйте этот QR-код в мобильном приложении Telegram:");
+            console.log(
+              "\n📷 Отсканируйте этот QR-код в мобильном приложении Telegram:",
+            );
             console.log("(Настройки -> Устройства -> Подключить устройство)\n");
             qrcode.generate(url, { small: true });
           },
-        }
+        },
       );
     } catch (err) {
       console.error("❌ Не удалось войти по QR:", err.message);
       process.exit(1);
     }
   } else if (choice === "3") {
-    // Вход через Bot Token
     const botToken = await input.text("Введите Bot Token: ");
     await client.start({
       botAuthToken: botToken,
@@ -65,7 +68,7 @@ if (!apiId || !apiHash) {
     console.log("❌ Неверный выбор.");
     process.exit(1);
   }
-//wddd
+  //wddd
   console.log("\n✅ Вы успешно вошли!");
   console.log("------------------------------------------");
   console.log("ТВОЯ СЕССИЯ (скопируй её в .env как STRING_SESSION):");
