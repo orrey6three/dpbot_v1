@@ -16,17 +16,37 @@ class Logger {
     this.context = context;
   }
 
+  static getLogTimezone() {
+    return process.env.LOG_TIMEZONE || process.env.TZ || "Asia/Yekaterinburg";
+  }
+
+  static getOffsetLabel(timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        timeZoneName: "shortOffset",
+      }).formatToParts(new Date());
+      const tzPart = parts.find((part) => part.type === "timeZoneName");
+      return tzPart?.value || "GMT+5";
+    } catch (_) {
+      return "GMT+5";
+    }
+  }
+
   static getTimestamp() {
-    const now = new Date();
-    return now.toLocaleString("en-GB", {
+    const timeZone = Logger.getLogTimezone();
+    const base = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-      hour12: true,
-    });
+      hour12: false,
+    }).format(new Date());
+
+    return `${base} ${Logger.getOffsetLabel(timeZone)}`;
   }
 
   log(message, context = this.context) {
@@ -48,6 +68,16 @@ class Logger {
 
   verbose(message, context = this.context) {
     this.print("VERBOSE", colors.cyan, message, context);
+  }
+
+  /**
+   * @param {string} text
+   * @param {number} [max]
+   */
+  static truncate(text, max = 400) {
+    const s = String(text ?? "");
+    if (s.length <= max) return s;
+    return `${s.slice(0, max)}…`;
   }
 
   print(level, color, message, context) {

@@ -30,9 +30,17 @@ function isFatalSessionError(error) {
   return (
     message.includes("SESSION_REVOKED") ||
     message.includes("USER_DEACTIVATED") ||
-    message.includes("AUTH_KEY_UNREGISTERED") ||
-    message.includes("AUTH_KEY_DUPLICATED")
+    message.includes("AUTH_KEY_UNREGISTERED")
   );
+}
+
+async function warmupDialogs(client, sessionName) {
+  try {
+    const dialogs = await client.getDialogs({ limit: 200 });
+    logger.log(`[${sessionName}] Dialog cache warmup complete: ${dialogs.length} dialogs loaded`);
+  } catch (err) {
+    logger.warn(`[${sessionName}] Dialog cache warmup failed: ${err.message}`);
+  }
 }
 
 async function processHistory(client, config, options = {}) {
@@ -110,6 +118,8 @@ export function createMtprotoTransport({ config, state }) {
 
     currentClient = client;
     state.activeAccount = sessionCfg.name;
+    state.activeSession = sessionCfg.name;
+    state.activeAccountUsername = null;
     state.transportHealthy = false;
 
     const lifecycle = (() => {
@@ -137,26 +147,23 @@ export function createMtprotoTransport({ config, state }) {
     const messageEvent = new NewMessage({});
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
-    // Создаем маппинг чат -> город для этой сессии
-    const cityMappings = {};
-    const targetChatIds = sessionCfg.chatIds || [];
-    const cityNames = sessionCfg.cityNames || [];
-    
-    targetChatIds.forEach((id, idx) => {
-      const normalizedId = id.replace(/^-100/, "");
-      cityMappings[normalizedId] = cityNames[idx] || cityNames[0] || config.defaultCity;
-    });
+    const targetChatIds = config.targetChatIds || [];
 
     const onNewMessage = async (event) => {
       lastEventAt = Date.now();
       const msgId = event.message.id;
       const chatId = event.message.chatId?.toString() || "unknown";
-      logger.debug(`[${sessionCfg.name}] Incoming message: ID=${msgId} from Chat=${chatId}`);
+      const body = event.message.message || "";
+      const date = event.message.date;
+      const peerId = event.message.peerId?.className || "unknown";
+      logger.log(
+        `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${chatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
+      );
       
       try {
         const handled = await processMessage(adaptMtprotoMessage(event.message), {
           targetChatIds,
-          cityMappings,
+          chatCityMap: config.chatCityMap,
         });
         if (handled) {
           state.lastMessageAt = new Date().toISOString();
@@ -180,9 +187,26 @@ export function createMtprotoTransport({ config, state }) {
 
     const onConnectionState = (update) => {
       lastEventAt = Date.now();
-      
+
       if (update.state !== lastLoggedState) {
-        logger.debug(`[${sessionCfg.name}] Connection state: ${update.state}`);
+        const label =
+          update.state === UpdateConnectionState.connected
+            ? "connected"
+            : update.state === UpdateConnectionState.disconnected
+              ? "disconnected"
+              : update.state === UpdateConnectionState.broken
+                ? "broken"
+                : String(update.state);
+        if (update.state === UpdateConnectionState.connected) {
+          logger.log(`[${sessionCfg.name}] MTProto: connection state = ${label}`);
+        } else if (
+          update.state === UpdateConnectionState.disconnected ||
+          update.state === UpdateConnectionState.broken
+        ) {
+          logger.warn(`[${sessionCfg.name}] MTProto: connection state = ${label}`);
+        } else {
+          logger.debug(`[${sessionCfg.name}] MTProto: connection state = ${label}`);
+        }
         lastLoggedState = update.state;
       }
 
@@ -213,13 +237,30 @@ export function createMtprotoTransport({ config, state }) {
 
     try {
       await client.connect();
+      logger.log(`[${sessionCfg.name}] MTProto: client connected (TCP)`);
+
+      client.addEventHandler(onConnectionState, connectionEvent);
+
+      await warmupDialogs(client, sessionCfg.name);
       const me = await client.getMe();
       const accountLabel = me.username || me.firstName || sessionCfg.name;
+      state.activeAccountUsername = me.username || null;
       state.transportHealthy = true;
       logger.log(`Successfully connected session ${sessionCfg.name} as @${accountLabel}`);
 
+      logger.log(
+        `[${sessionCfg.name}] MTProto: syncing chat history (${targetChatIds.length} chat(s))...`
+      );
+      for (const chatId of targetChatIds) {
+        await processHistory(
+          client,
+          { ...config, chatId },
+          { targetChatIds, chatCityMap: config.chatCityMap }
+        );
+      }
+      logger.log(`[${sessionCfg.name}] MTProto: chat history sync finished`);
+
       client.addEventHandler(onNewMessage, messageEvent);
-      client.addEventHandler(onConnectionState, connectionEvent);
 
       probeTimer = setInterval(async () => {
         if (stopRequested) return;
@@ -249,15 +290,6 @@ export function createMtprotoTransport({ config, state }) {
         }
       }, config.connectionProbeIntervalMs);
 
-      // Обработка истории для всех чатов этой сессии
-      for (const chatId of targetChatIds) {
-        await processHistory(
-          client,
-          { ...config, chatId },
-          { targetChatIds, cityMappings }
-        );
-      }
-      
       logger.log(`[${sessionCfg.name}] Listening for new messages in ${targetChatIds.length} chats...`);
 
       const outcome = await lifecycle.promise;
@@ -293,25 +325,41 @@ export function createMtprotoTransport({ config, state }) {
         throw new Error("Сессии не найдены. Запусти: node login.js");
       }
 
-      logger.log(`Starting ${config.sessions.length} parallel sessions...`);
+      logger.log(`Starting failover chain with ${config.sessions.length} sessions...`);
+      let index = 0;
 
-      const sessionPromises = config.sessions.map(async (sessionCfg, index) => {
-        while (!stopRequested) {
-          const outcome = await runSession(sessionCfg, index);
-          if (stopRequested) break;
-
-          if (outcome?.switchAccount) {
-            logger.error(`Session "${sessionCfg.name}" is FATAL: ${outcome?.reason?.message}. Stopping this session worker.`);
-            break; 
-          } else {
-            const reason = outcome?.reason?.message || "unknown reason";
-            logger.warn(`Restarting session "${sessionCfg.name}" in ${config.reconnectDelayMs}ms. Reason: ${reason}`);
-            await sleep(config.reconnectDelayMs);
-          }
+      while (!stopRequested) {
+        const sessionCfg = config.sessions[index];
+        let outcome;
+        try {
+          outcome = await runSession(sessionCfg, index);
+        } catch (err) {
+          outcome = {
+            reason: err,
+            switchAccount: true,
+          };
         }
-      });
+        if (stopRequested) break;
 
-      await Promise.all(sessionPromises);
+        const reason = outcome?.reason?.message || "unknown reason";
+        const isFatal = Boolean(outcome?.switchAccount);
+        const nextIndex = (index + 1) % config.sessions.length;
+        const nextSession = config.sessions[nextIndex];
+
+        if (isFatal) {
+          logger.error(
+            `Session "${sessionCfg.name}" failed fatally: ${reason}. Switching to "${nextSession.name}".`
+          );
+        } else {
+          logger.warn(
+            `Session "${sessionCfg.name}" stopped: ${reason}. Switching to "${nextSession.name}".`
+          );
+        }
+
+        state.lastFailoverAt = new Date().toISOString();
+        index = nextIndex;
+        await sleep(config.reconnectDelayMs);
+      }
     },
     async stop() {
       stopRequested = true;

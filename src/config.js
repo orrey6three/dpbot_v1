@@ -38,6 +38,48 @@ function ensureLeadingSlash(value) {
   return value.startsWith("/") ? value : `/${value}`;
 }
 
+function normalizeChatId(value) {
+  return String(value || "").trim().replace(/^-100/, "");
+}
+
+function splitCsv(value) {
+  return String(value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function getTargetChats() {
+  const namedChats = [
+    { city: "Шумиха", id: optionalEnv("CHAT_SHUMIKHA_ID") },
+    { city: "Щучье", id: optionalEnv("CHAT_SHCHUCHYE_ID") },
+    { city: "Мишкино", id: optionalEnv("CHAT_MISHKINO_ID") },
+  ].filter((item) => item.id);
+
+  if (namedChats.length) {
+    const targetChatIds = namedChats.map((item) => String(item.id).trim());
+    const chatCityMap = {};
+    namedChats.forEach((item) => {
+      const rawId = String(item.id).trim();
+      const normalizedId = normalizeChatId(item.id);
+      chatCityMap[rawId] = item.city;
+      chatCityMap[normalizedId] = item.city;
+    });
+    return { targetChatIds, chatCityMap };
+  }
+
+  const fallbackChatIds = splitCsv(optionalEnv("CHAT_ID", "-1002027583613"));
+  const fallbackCities = splitCsv(optionalEnv("CITY_NAME", optionalEnv("DEFAULT_CITY", "Шумиха")));
+  const targetChatIds = fallbackChatIds.map((id) => String(id).trim());
+  const chatCityMap = {};
+  targetChatIds.forEach((id, idx) => {
+    const city = fallbackCities[idx] || fallbackCities[0] || "Шумиха";
+    chatCityMap[id] = city;
+    chatCityMap[normalizeChatId(id)] = city;
+  });
+  return { targetChatIds, chatCityMap };
+}
+
 function getSessions() {
   const sessions = [];
   const keys = Object.keys(process.env).filter((key) => key.startsWith("STRING_SESSION"));
@@ -53,27 +95,20 @@ function getSessions() {
     if (!stringSession) continue;
 
     const suffix = key.replace("STRING_SESSION", "");
+    const enabledKey = suffix ? `SESSION_ENABLED${suffix}` : "SESSION_ENABLED";
+    const enabled = optionalBoolean(enabledKey, true);
+    if (!enabled) continue;
+
     const apiIdKey = suffix ? `API_ID${suffix}` : "API_ID";
     const apiHashKey = suffix ? `API_HASH${suffix}` : "API_HASH";
-    const cityNameKey = suffix ? `CITY_NAME${suffix}` : "CITY_NAME";
-    const chatIdKey = suffix ? `CHAT_ID${suffix}` : "CHAT_ID";
-
     const apiId = optionalNumber(apiIdKey, optionalNumber("API_ID", NaN));
     const apiHash = optionalEnv(apiHashKey, optionalEnv("API_HASH"));
-
-    const cityNamesRaw = optionalEnv(cityNameKey, optionalEnv("DEFAULT_CITY"));
-    const chatIdsRaw = optionalEnv(chatIdKey, optionalEnv("CHAT_ID"));
-
-    const cityNames = cityNamesRaw.split(",").map((s) => s.trim()).filter(Boolean);
-    const chatIds = chatIdsRaw.split(",").map((s) => s.trim()).filter(Boolean);
 
     sessions.push({
       name: key,
       stringSession,
       apiId,
       apiHash,
-      cityNames,
-      chatIds,
     });
   }
 
@@ -85,11 +120,12 @@ const webhookPublicUrl = trimSlashes(optionalEnv("WEBHOOK_PUBLIC_URL", optionalE
 const requestedMode = optionalEnv("TELEGRAM_MODE").toLowerCase();
 const mode = requestedMode || (telegramBotToken && webhookPublicUrl ? "webhook" : "mtproto");
 
-const port = optionalNumber("PORT", optionalNumber("WEBHOOK_PORT", 3001));
+const port = optionalNumber("PORT", optionalNumber("WEBHOOK_PORT", 3000));
 const healthPath = ensureLeadingSlash(optionalEnv("HEALTH_PATH", "/health"));
 const statusPath = ensureLeadingSlash(optionalEnv("STATUS_PATH", "/status"));
 const webhookPath = ensureLeadingSlash(optionalEnv("WEBHOOK_PATH", "/telegram/webhook"));
 const webhookSecretToken = optionalEnv("WEBHOOK_SECRET_TOKEN", optionalEnv("BOT_TOKEN"));
+const targetChats = getTargetChats();
 
 const sessions = getSessions();
 
@@ -108,12 +144,16 @@ export const config = {
   webhookAllowedUpdates: ["message", "channel_post"],
   webhookDropPendingUpdates: optionalBoolean("WEBHOOK_DROP_PENDING_UPDATES", false),
   webhookSetOnStart: optionalBoolean("WEBHOOK_SET_ON_START", true),
+  webhookMonitorEnabled: optionalBoolean("WEBHOOK_MONITOR_ENABLED", true),
+  webhookMonitorIntervalMs: optionalNumber("WEBHOOK_MONITOR_INTERVAL_MS", 5 * 60 * 1000),
 
   httpPort: port,
   healthPath,
   statusPath,
 
   chatId: optionalEnv("CHAT_ID", "-1002027583613"),
+  targetChatIds: targetChats.targetChatIds,
+  chatCityMap: targetChats.chatCityMap,
 
   apiUrl: optionalEnv("API_URL", "http://localhost:3000/api/patrol"),
   botToken: optionalEnv("BOT_TOKEN", "change-me-bot-secret"),

@@ -6,6 +6,7 @@ import { createPost } from "./api.js";
 import { Logger } from "./logger.js";
 
 const logger = new Logger("Processor");
+const MAX_MESSAGE_LOG_CHARS = Number.parseInt(process.env.LOG_MESSAGE_MAX_CHARS || "", 10) || 500;
 
 const msgCache = new MessageCache(200);
 const processedCache = new ProcessedCache(
@@ -68,36 +69,58 @@ async function resolveAuthor(message) {
 
 /**
  * @param {NormalizedMessage} message
- * @param {{ targetChatIds?: string[], cityMappings?: Record<string, string> }} options
+ * @param {{ targetChatIds?: string[], chatCityMap?: Record<string, string> }} options
  * @returns {Promise<boolean>}
  */
 export async function processMessage(message, options = {}) {
-  if (!message?.text) return false;
+  const rawChatId = String(message.chatId ?? "");
+  const chatId = normalizeId(rawChatId);
 
-  const chatId = normalizeId(message.chatId ?? "");
-  if (processedCache.has(chatId, message.id)) return false;
-
-  const ageSeconds = Math.floor(Date.now() / 1000) - message.date;
-  if (ageSeconds > config.maxMsgAgeSeconds) {
-    logger.debug(`Skipping old message (age: ${ageSeconds}s, id: ${message.id})`);
+  if (!message?.text) {
+    logger.verbose(
+      `Processor: skip empty text msgId=${message.id} chatId=${rawChatId}`
+    );
     return false;
   }
 
-  const targetIds = (options.targetChatIds || [config.chatId]).map(normalizeId);
+  if (processedCache.has(chatId, message.id)) {
+    logger.verbose(
+      `Processor: skip already processed msgId=${message.id} chatId=${chatId}`
+    );
+    return false;
+  }
+
+  const ageSeconds = Math.floor(Date.now() / 1000) - message.date;
+  if (ageSeconds > config.maxMsgAgeSeconds) {
+    logger.verbose(
+      `Processor: skip too old msgId=${message.id} ageSec=${ageSeconds} max=${config.maxMsgAgeSeconds}`
+    );
+    return false;
+  }
+
+  const targetIds = (options.targetChatIds || config.targetChatIds || [config.chatId]).map(normalizeId);
   const isTarget = targetIds.includes(chatId);
 
   if (!isTarget) {
-    logger.debug(`Skipping message from untargeted chat: ${chatId} (expected one of: ${targetIds.join(", ")})`);
+    logger.verbose(
+      `Processor: skip non-target chat msgId=${message.id} chatId=${chatId} targets=${targetIds.join(",")}`
+    );
     return false;
   }
 
   const author = await resolveAuthor(message);
   const text = await resolveText(message);
-  
-  // Определяем город для этого чата
-  const cityName = options.cityMappings?.[chatId] || config.defaultCity;
+  const cityName =
+    options.chatCityMap?.[rawChatId] ||
+    options.chatCityMap?.[chatId] ||
+    config.chatCityMap?.[rawChatId] ||
+    config.chatCityMap?.[chatId] ||
+    config.defaultCity;
+  const textPreview = Logger.truncate(text, MAX_MESSAGE_LOG_CHARS);
 
-  logger.log(`[${cityName}] Processing message from ${author}: "${text.slice(0, 50)}..."`);
+  logger.log(
+    `Processor: handling msgId=${message.id} chatId=${rawChatId} norm=${chatId} city=${cityName} author=${author} replyTo=${message.replyToMessageId ?? "—"} text="${textPreview}"`
+  );
 
   processedCache.add(chatId, message.id);
 
@@ -105,16 +128,20 @@ export async function processMessage(message, options = {}) {
   try {
     posts = await parseMessageWithAI(text);
   } catch (err) {
-    logger.error(`AI Analysis failed: ${err.message}`);
+    logger.error(`Processor: AI / OpenRouter failed — ${err.message}`);
     return false;
   }
 
   if (!posts.length) {
-    logger.verbose("No relevant tags found in the message");
+    logger.log(
+      `Processor: done msgId=${message.id} — no API posts (AI returned no patrol rows)`
+    );
     return false;
   }
 
-  logger.log(`Found ${posts.length} entries. Starting geocoding and post creation...`);
+  logger.log(
+    `Processor: geocode + createPost for ${posts.length} row(s) msgId=${message.id}`
+  );
 
   const results = await Promise.allSettled(
     posts.map(async ({ street, type }) => {
@@ -135,14 +162,18 @@ export async function processMessage(message, options = {}) {
   for (const result of results) {
     if (result.status === "fulfilled") {
       successCount++;
-      logger.verbose(`Created post id=${result.value.id} [${result.value.type}] ${result.value.street}`);
+      logger.log(
+        `Processor: post OK msgId=${message.id} postId=${result.value.id} type=${result.value.type} street=${result.value.street}`
+      );
     } else {
-      logger.error(`Post creation error: ${result.reason?.message}`);
+      logger.error(`Processor: post FAILED msgId=${message.id} — ${result.reason?.message}`);
     }
   }
 
   if (successCount > 0) {
-    logger.log(`Successfully handled ${successCount}/${posts.length} entries`);
+    logger.log(
+      `Processor: finished msgId=${message.id} — saved ${successCount}/${posts.length} post(s)`
+    );
   }
 
   return true;

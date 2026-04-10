@@ -4,7 +4,7 @@
 
 ## Что теперь умеет рантайм
 
-- `mtproto` режим для текущей схемы со `STRING_SESSION`: бот держит watchdog, отслеживает потерю соединения, сам переподнимается и отдает `/health`.
+- `mtproto` режим для аккаунтов `STRING_SESSION*`: бот держит watchdog, отслеживает потерю соединения, работает по failover-цепочке аккаунтов и отдает `/health`.
 - `webhook` режим для обычного Bot API: если есть `TELEGRAM_BOT_TOKEN` или `TG_TOKEN` и публичный `WEBHOOK_PUBLIC_URL`, бот сам зарегистрирует webhook и будет принимать апдейты по HTTP.
 - В обоих режимах есть HTTP сервер со статусом:
   - `GET /health`
@@ -20,18 +20,18 @@
 
 ## Деплой
 
-Контейнер поднимает HTTP сервер на порту `PORT` (по умолчанию `3001`).
+Контейнер поднимает HTTP сервер на порту `PORT` (по умолчанию `3000`).
 
 В Docker добавлены:
 
-- `EXPOSE 3001`
+- `EXPOSE 3000`
 - `HEALTHCHECK` на `/health`
 
 В `docker-compose.yml` добавлен проброс порта:
 
 ```yaml
 ports:
-  - "${PORT:-3001}:${PORT:-3001}"
+  - "${PORT:-3000}:${PORT:-3000}"
 ```
 
 И volume для постоянного state-файла:
@@ -49,7 +49,9 @@ volumes:
 - `YANDEX_MAPS_API_KEY`
 - `API_URL`
 - `BOT_TOKEN`
-- `CHAT_ID`
+- `CHAT_SHUMIKHA_ID`
+- `CHAT_SHCHUCHYE_ID`
+- `CHAT_MISHKINO_ID`
 
 ### MTProto режим
 
@@ -59,12 +61,20 @@ volumes:
 - `API_HASH`
 - `STRING_SESSION`
 
-Дополнительно можно указать несколько сессий:
+Дополнительно можно указать резервные/дополнительные сессии (failover по порядку):
 
 - `STRING_SESSION`
 - `STRING_SESSION_2`
 - `API_ID_2`
 - `API_HASH_2`
+- `SESSION_ENABLED_2=false` (удобно временно отключить конкретную сессию, не удаляя `STRING_SESSION_2`)
+- Аналогично работает для именованных сессий: `SESSION_ENABLED_GENA=false`
+
+Как работает failover:
+
+- Сессии запускаются не параллельно, а по цепочке приоритета: `STRING_SESSION` -> `STRING_SESSION_2` -> `STRING_SESSION_GENA` -> ...
+- Если текущая сессия падает, бот переключается на следующую.
+- Все сессии слушают один и тот же набор целевых чатов (`CHAT_SHUMIKHA_ID`, `CHAT_SHCHUCHYE_ID`, `CHAT_MISHKINO_ID`).
 
 ### Webhook режим
 
@@ -78,7 +88,11 @@ volumes:
 - `WEBHOOK_PATH` по умолчанию `/telegram/webhook`
 - `WEBHOOK_SECRET_TOKEN` по умолчанию берется из `BOT_TOKEN`
 - `WEBHOOK_DROP_PENDING_UPDATES=false`
-- `PORT=3001`
+- `WEBHOOK_MONITOR_ENABLED=true`
+- `WEBHOOK_MONITOR_INTERVAL_MS=300000`
+- `PORT=3000`
+
+В проде включен watchdog webhook: бот периодически вызывает `getWebhookInfo` и автоматически переустанавливает webhook, если Telegram его сбросил, URL изменился или есть ошибка доставки.
 
 ## Постоянный кэш обработанных сообщений
 
@@ -104,7 +118,7 @@ STATE_FILE_PATH=.runtime/bot-state.json
 TELEGRAM_MODE=webhook
 TG_TOKEN=123456:telegram-bot-token
 WEBHOOK_PUBLIC_URL=https://bot.example.com
-PORT=3001
+PORT=3000
 ```
 
 Webhook будет зарегистрирован на:
@@ -130,4 +144,12 @@ npm start
 ## Полезные эндпоинты
 
 - `/health` -> 200 когда транспорт жив, 503 если соединение потеряно
-- `/status` -> подробный JSON по текущему состоянию рантайма
+- `/status` -> подробный JSON по текущему состоянию рантайма, включая:
+  - `activeSession` (какой ключ сессии активен сейчас)
+  - `activeAccountUsername` (username подключенного аккаунта, если есть)
+  - `lastFailoverAt` (когда было последнее переключение между сессиями)
+
+## Часовой пояс логов
+
+- По умолчанию логи печатаются в `Asia/Yekaterinburg` (GMT+5).
+- Можно переопределить через `LOG_TIMEZONE`.

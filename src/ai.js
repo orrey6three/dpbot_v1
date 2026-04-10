@@ -4,6 +4,8 @@ import { Logger } from "./logger.js";
 
 const logger = new Logger("AI");
 
+const OPENROUTER_MODEL = "google/gemini-2.0-flash-001";
+
 const SYSTEM_PROMPT = `Ты парсер сообщений из чата водителей города Шумиха (Россия).
 Люди пишут про посты ДПС и патрули на улицах. Твоя задача — извлечь структурированные данные.
 
@@ -42,6 +44,10 @@ const SYSTEM_PROMPT = `Ты парсер сообщений из чата вод
  */
 export async function parseMessageWithAI(text) {
   const start = Date.now();
+  logger.log(
+    `OpenRouter: request start model=${OPENROUTER_MODEL} chars=${String(text || "").length}`
+  );
+
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method:  "POST",
     timeout: config.apiTimeoutMs,
@@ -52,7 +58,7 @@ export async function parseMessageWithAI(text) {
       "X-Title":       "DPS Posts Bot",
     },
     body: JSON.stringify({
-      model:       "google/gemini-2.0-flash-001",
+      model:       OPENROUTER_MODEL,
       max_tokens:  300,
       temperature: 0,
       messages: [
@@ -64,11 +70,16 @@ export async function parseMessageWithAI(text) {
 
   if (!res.ok) {
     const err = await res.text();
+    logger.error(`OpenRouter: HTTP ${res.status} — ${Logger.truncate(err, 200)}`);
     throw new Error(`OpenRouter HTTP ${res.status}: ${err}`);
   }
 
-  const data    = await res.json();
-  const raw     = data.choices?.[0]?.message?.content?.trim() || "";
+  const data = await res.json();
+  const raw = data.choices?.[0]?.message?.content?.trim() || "";
+  const elapsed = Date.now() - start;
+  logger.log(
+    `OpenRouter: response OK in ${elapsed}ms, rawChars=${raw.length}`
+  );
   const cleaned = raw
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
@@ -79,17 +90,26 @@ export async function parseMessageWithAI(text) {
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    logger.error(`Failed to parse AI JSON: ${cleaned.slice(0, 50)}...`);
+    logger.error(`AI: failed to parse JSON — ${Logger.truncate(cleaned, 120)}`);
     return [];
   }
 
-  const duration = Date.now() - start;
-  if (parsed.posts?.length > 0) {
-    logger.debug(`Parsed ${parsed.posts.length} posts in ${duration}ms`);
+  if (!Array.isArray(parsed.posts)) {
+    logger.warn("AI: response had no posts array, treating as empty");
+    return [];
   }
 
-  if (!Array.isArray(parsed.posts)) return [];
-  return parsed.posts.filter(
+  const filtered = parsed.posts.filter(
     (p) => p.street && ["ДПС", "Чисто"].includes(p.type)
   );
+
+  if (filtered.length > 0) {
+    logger.log(
+      `AI: parsed ${filtered.length} patrol entr${filtered.length === 1 ? "y" : "ies"} — ${filtered.map((p) => `${p.type}:${p.street}`).join("; ")}`
+    );
+  } else {
+    logger.log("AI: no patrol entries extracted (irrelevant or empty posts)");
+  }
+
+  return filtered;
 }
