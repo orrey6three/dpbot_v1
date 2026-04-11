@@ -4,6 +4,7 @@ import path from "node:path";
 /**
  * MessageCache — хранит текст и parentId для построения цепочек ответов.
  * ProcessedCache — дедупликация: не обрабатывать одно сообщение дважды.
+ * MarkerCache — хранит ID последних созданных постов для их обновления/удаления.
  */
 
 function resolveStoragePath(storagePath) {
@@ -35,9 +36,6 @@ export class MessageCache {
     }
   }
 
-  /**
-   * Возвращает массив текстов от корня цепочки до startMsgId.
-   */
   getChain(chatId, startMsgId) {
     let currentId = startMsgId;
     const chain = [];
@@ -54,7 +52,7 @@ export class MessageCache {
 }
 
 export class ProcessedCache {
-  constructor(limit = 5000, ttlMs = 6 * 60 * 60 * 1000, storagePath = "") {
+  constructor(limit = 5000, ttlMs = 7 * 24 * 3600 * 1000, storagePath = "") {
     this.limit = limit;
     this.ttlMs = ttlMs;
     this.storagePath = resolveStoragePath(storagePath);
@@ -107,6 +105,7 @@ export class ProcessedCache {
     if (!this.storagePath) return;
 
     try {
+      if (!fs.existsSync(this.storagePath)) return;
       const raw = fs.readFileSync(this.storagePath, "utf8");
       const parsed = JSON.parse(raw);
       const entries = Array.isArray(parsed?.ids) ? parsed.ids : [];
@@ -117,10 +116,12 @@ export class ProcessedCache {
         if (typeof key !== "string" || !Number.isFinite(expiresAt)) continue;
         this.ids.set(key, expiresAt);
       }
-    } catch (err) {
-      if (err.code !== "ENOENT") {
-        console.error("[STATE] Не удалось загрузить кэш обработанных сообщений:", err.message);
+      
+      if (this.ids.size > 0) {
+        console.log(`[STATE] ProcessedCache: загружено ${this.ids.size} элементов из ${path.basename(this.storagePath)}`);
       }
+    } catch (err) {
+      console.error("[STATE] Ошибка загрузки ProcessedCache:", err.message);
     }
   }
 
@@ -142,7 +143,8 @@ export class ProcessedCache {
       fs.writeFileSync(tempPath, payload, "utf8");
       fs.renameSync(tempPath, this.storagePath);
     } catch (err) {
-      console.error("[STATE] Не удалось сохранить кэш обработанных сообщений:", err.message);
+      console.error("[STATE] Ошибка сохранения ProcessedCache:", err.message);
     }
   }
 }
+

@@ -117,6 +117,7 @@ export async function processMessage(message, options = {}) {
     `Processor: handling msgId=${message.id} chatId=${rawChatId} norm=${chatId} city=${cityName} author=${author} replyTo=${message.replyToMessageId ?? "—"} text="${textPreview}"`
   );
 
+  // Mark as processed early to prevent race conditions during history sync
   processedCache.add(chatId, message.id);
 
   let posts;
@@ -149,6 +150,7 @@ export async function processMessage(message, options = {}) {
         coords,
         author,
       });
+
       return { street, type, id: result.post?.id };
     })
   );
