@@ -1,4 +1,4 @@
-import { config } from "./config.js";
+import { config, normalizeChatId } from "./config.js";
 import { MessageCache, ProcessedCache } from "./cache.js";
 import { parseMessageWithAI } from "./ai.js";
 import { geocodeStreet } from "./geocoder.js";
@@ -15,13 +15,11 @@ const processedCache = new ProcessedCache(
   config.stateFilePath
 );
 
-function normalizeId(id) {
-  return String(id).replace(/^-100/, "");
-}
+// Using normalizeChatId from config.js
 
 
 async function resolveText(message) {
-  const chatId = normalizeId(message.chatId ?? "");
+  const chatId = normalizeChatId(message.chatId ?? "");
   const text = message.text;
   const parentId = message.replyToMessageId ?? null;
 
@@ -74,7 +72,7 @@ async function resolveAuthor(message) {
  */
 export async function processMessage(message, options = {}) {
   const rawChatId = String(message.chatId ?? "");
-  const chatId = normalizeId(rawChatId);
+  const chatId = normalizeChatId(rawChatId);
 
   if (!message?.text) {
     logger.verbose(
@@ -98,13 +96,10 @@ export async function processMessage(message, options = {}) {
     return false;
   }
 
-  const targetIds = (options.targetChatIds || config.targetChatIds || [config.chatId]).map(normalizeId);
+  const targetIds = (options.targetChatIds || config.targetChatIds || [config.chatId]).map(normalizeChatId);
   const isTarget = targetIds.includes(chatId);
 
   if (!isTarget) {
-    logger.verbose(
-      `Processor: skip non-target chat msgId=${message.id} chatId=${chatId} targets=${targetIds.join(",")}`
-    );
     return false;
   }
 

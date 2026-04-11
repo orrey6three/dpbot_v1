@@ -38,7 +38,7 @@ function ensureLeadingSlash(value) {
   return value.startsWith("/") ? value : `/${value}`;
 }
 
-function normalizeChatId(value) {
+export function normalizeChatId(value) {
   return String(value || "").trim().replace(/^-100/, "");
 }
 
@@ -56,27 +56,32 @@ function getTargetChats() {
     { city: "Мишкино", id: optionalEnv("CHAT_MISHKINO_ID") },
   ].filter((item) => item.id);
 
+  const fallbackChatIds = splitCsv(optionalEnv("CHAT_ID", "-1002027583613"));
+  const fallbackCities = splitCsv(optionalEnv("CITY_NAME", optionalEnv("DEFAULT_CITY", "Шумиха")));
+
+  const uniqueTargetChatIds = [...new Set(namedChats.length ? 
+    namedChats.map((item) => String(item.id).trim()) : 
+    fallbackChatIds.map((id) => String(id).trim())
+  )];
+
+  const targetChatIds = uniqueTargetChatIds;
+  const chatCityMap = {};
+  
   if (namedChats.length) {
-    const targetChatIds = namedChats.map((item) => String(item.id).trim());
-    const chatCityMap = {};
     namedChats.forEach((item) => {
       const rawId = String(item.id).trim();
       const normalizedId = normalizeChatId(item.id);
       chatCityMap[rawId] = item.city;
       chatCityMap[normalizedId] = item.city;
     });
-    return { targetChatIds, chatCityMap };
+  } else {
+    targetChatIds.forEach((id, idx) => {
+      const city = fallbackCities[idx] || fallbackCities[0] || "Шумиха";
+      chatCityMap[id] = city;
+      chatCityMap[normalizeChatId(id)] = city;
+    });
   }
 
-  const fallbackChatIds = splitCsv(optionalEnv("CHAT_ID", "-1002027583613"));
-  const fallbackCities = splitCsv(optionalEnv("CITY_NAME", optionalEnv("DEFAULT_CITY", "Шумиха")));
-  const targetChatIds = fallbackChatIds.map((id) => String(id).trim());
-  const chatCityMap = {};
-  targetChatIds.forEach((id, idx) => {
-    const city = fallbackCities[idx] || fallbackCities[0] || "Шумиха";
-    chatCityMap[id] = city;
-    chatCityMap[normalizeChatId(id)] = city;
-  });
   return { targetChatIds, chatCityMap };
 }
 

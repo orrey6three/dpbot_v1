@@ -3,6 +3,7 @@ import { StringSession } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/Raw.js";
 import { UpdateConnectionState } from "telegram/network/index.js";
+import { config, normalizeChatId } from "../config.js";
 import { adaptMtprotoMessage } from "../messages.js";
 import { processMessage } from "../processor.js";
 import { Logger } from "../logger.js";
@@ -144,22 +145,33 @@ export function createMtprotoTransport({ config, state }) {
     let lastEventAt = Date.now();
     let lastLoggedState = null;
 
-    const messageEvent = new NewMessage({});
+    const targetChatIds = config.targetChatIds || [];
+    const messageEvent = new NewMessage({ chats: targetChatIds });
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
-    const targetChatIds = config.targetChatIds || [];
+    const normalizedTargetIds = targetChatIds.map(normalizeChatId);
 
     const onNewMessage = async (event) => {
-      lastEventAt = Date.now();
       const msgId = event.message.id;
-      const chatId = event.message.chatId?.toString() || "unknown";
+      const rawChatId = event.message.chatId?.toString() || "unknown";
+      const chatId = normalizeChatId(rawChatId);
+      const isTarget = normalizedTargetIds.includes(chatId);
+
+      // We only update lastEventAt for TARGET chats to ensure watchdog catches stalls for what we actually care about
+      if (isTarget) {
+        lastEventAt = Date.now();
+      }
+
       const body = event.message.message || "";
       const date = event.message.date;
       const peerId = event.message.peerId?.className || "unknown";
-      logger.log(
-        `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${chatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
-      );
-      
+
+      if (isTarget) {
+        logger.log(
+          `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${rawChatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
+        );
+      }
+
       try {
         const handled = await processMessage(adaptMtprotoMessage(event.message), {
           targetChatIds,
