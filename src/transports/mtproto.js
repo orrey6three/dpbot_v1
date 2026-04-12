@@ -69,7 +69,16 @@ async function processHistory(client, config, options = {}) {
   for (let index = 0; index < fresh.length; index += config.historyBatchSize) {
     const batch = fresh.slice(index, index + config.historyBatchSize);
     const results = await Promise.allSettled(
-      batch.map((message) => processMessage(adaptMtprotoMessage(message), options))
+      batch.map((message) => 
+        withTimeout(
+          processMessage(adaptMtprotoMessage(message), options),
+          config.messageProcessTimeoutMs,
+          `History message ${message.id}`
+        ).catch(err => {
+          logger.error(`Error processing history message ${message.id}: ${err.message}`);
+          return false;
+        })
+      )
     );
 
     processed += results.filter(
@@ -144,6 +153,7 @@ export function createMtprotoTransport({ config, state }) {
 
     let reconnectTimer = null;
     let probeTimer = null;
+    let pollTimer = null;
     let lastEventAt = Date.now();
     let lastLoggedState = null;
     let queueLength = 0;
@@ -156,31 +166,46 @@ export function createMtprotoTransport({ config, state }) {
     let processingQueue = Promise.resolve();
 
     const onNewMessage = async (event) => {
-      // ANY incoming message (target or not) updates the watchdog to confirm the stream is alive
-      lastEventAt = Date.now();
+      if (!event.message) return;
 
       const msgId = event.message.id;
-      const rawChatId = event.message.chatId?.toString() || "unknown";
+      const text = event.message.message || "";
+      let rawChatId = "unknown";
+      
+      try {
+        const peerId = await client.getPeerId(event.message.peerId);
+        rawChatId = peerId.toString();
+      } catch (err) {
+        rawChatId = event.message.chatId?.toString() || "unknown";
+      }
+
       const chatId = normalizeChatId(rawChatId);
       const isTarget = normalizedTargetIds.includes(chatId);
+
+      // WE LOG EVERYTHING AS REQUESTED
+      const logPrefix = isTarget ? "TARGET" : "SKIP";
+      logger.log(
+        `[${sessionCfg.name}] [${logPrefix}] msgId=${msgId} chatId=${rawChatId} text="${Logger.truncate(text, 100)}"`
+      );
 
       if (!isTarget) {
         return;
       }
 
+      // TARGET messages update the watchdog
+      lastEventAt = Date.now();
       queueLength++;
-      logger.verbose(
-        `[${sessionCfg.name}] Incoming: msgId=${msgId} chatId=${rawChatId} queueLength=${queueLength}`
-      );
 
-      // We use a promise chain to process messages sequentially with a delay
+      // Sequential processing queue
       processingQueue = processingQueue.then(async () => {
         try {
-          // Add a small delay between tasks to avoid overwhelming the API/DB
           await sleep(config.messageIntervalMs);
 
+          const adapted = adaptMtprotoMessage(event.message);
+          adapted.chatId = rawChatId;
+
           const handled = await withTimeout(
-            processMessage(adaptMtprotoMessage(event.message), {
+            processMessage(adapted, {
               targetChatIds,
               chatCityMap: config.chatCityMap,
             }),
@@ -212,7 +237,7 @@ export function createMtprotoTransport({ config, state }) {
     };
 
     const onConnectionState = (update) => {
-      lastEventAt = Date.now();
+      // Connection events DON'T update lastEventAt anymore (we want actual message activity)
 
       if (update.state !== lastLoggedState) {
         const label =
@@ -276,6 +301,22 @@ export function createMtprotoTransport({ config, state }) {
 
       // 1. First, register the event handlers so we don't miss anything while syncing
       client.addEventHandler(onNewMessage, new NewMessage({}));
+      
+      // Add a raw logger to see if ANY updates are coming from Telegram
+      client.addEventHandler((update) => {
+        if (update instanceof Api.UpdateNewMessage || update instanceof Api.UpdateNewChannelMessage) {
+          // These are already handled by onNewMessage
+          return;
+        }
+        // Log other types of updates for debugging
+        if (update.constructor) {
+          logger.debug(`[${sessionCfg.name}] Raw update: ${update.constructor.name}`);
+        }
+      });
+
+      const stateResult = await client.invoke(new Api.updates.GetState());
+      logger.log(`[${sessionCfg.name}] MTProto: updates state synced (pts=${stateResult.pts})`);
+
       // onConnectionState already added above
       logger.log(`[${sessionCfg.name}] MTProto: event handlers registered`);
 
@@ -296,15 +337,9 @@ export function createMtprotoTransport({ config, state }) {
       }
       logger.log(`[${sessionCfg.name}] MTProto: chat history sync finished`);
 
+      // 3. Keep-alive probe (Watchdog)
       probeTimer = setInterval(async () => {
         if (stopRequested) return;
-
-        const idleTime = Date.now() - lastEventAt;
-        if (idleTime > 20 * 60 * 1000) {
-          logger.warn(`[${sessionCfg.name}] Update stream stalled (no activity for 20 min). Restarting...`);
-          requestRestart(new Error("Update stream stalled"));
-          return;
-        }
 
         if (!client.connected) {
           requestRestart(new Error("MTProto клиент потерял соединение"));
@@ -312,8 +347,6 @@ export function createMtprotoTransport({ config, state }) {
         }
 
         try {
-          // Probe helps keep the connection alive but SHOULD NOT update lastEventAt, 
-          // because we want lastEventAt to track actual messages/updates to detect stalls.
           await withTimeout(
             client.invoke(new Api.updates.GetState()),
             config.connectionProbeTimeoutMs,
@@ -324,6 +357,25 @@ export function createMtprotoTransport({ config, state }) {
           requestRestart(err);
         }
       }, config.connectionProbeIntervalMs);
+
+      // 4. ACTIVE POLLING (The "Genius" fallback)
+      // Every 45 seconds, manually check history just in case event stream stalled
+      pollTimer = setInterval(async () => {
+        if (stopRequested || !client.connected) return;
+        
+        logger.verbose(`[${sessionCfg.name}] [Active Polling] Checking ${targetChatIds.length} chats for updates...`);
+        for (const chatId of targetChatIds) {
+          try {
+            await processHistory(
+              client,
+              { ...config, chatId, historyLimit: 10 }, // Check last 10 messages
+              { targetChatIds, chatCityMap: config.chatCityMap }
+            );
+          } catch (err) {
+            logger.warn(`[${sessionCfg.name}] Active Polling failed for ${chatId}: ${err.message}`);
+          }
+        }
+      }, 45000);
 
       logger.log(`[${sessionCfg.name}] Listening for new messages in ${targetChatIds.length} chats...`);
 
@@ -340,6 +392,7 @@ export function createMtprotoTransport({ config, state }) {
     } finally {
       state.transportHealthy = false;
       if (probeTimer) clearInterval(probeTimer);
+      if (pollTimer) clearInterval(pollTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       try {
         client.removeEventHandler(onNewMessage);
