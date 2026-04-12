@@ -146,7 +146,7 @@ export function createMtprotoTransport({ config, state }) {
     let lastLoggedState = null;
 
     const targetChatIds = config.targetChatIds || [];
-    const messageEvent = new NewMessage({ chats: targetChatIds });
+    const messageEvent = new NewMessage({}); // Listen to all, filter manually
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
     const normalizedTargetIds = targetChatIds.map(normalizeChatId);
@@ -157,33 +157,41 @@ export function createMtprotoTransport({ config, state }) {
       const chatId = normalizeChatId(rawChatId);
       const isTarget = normalizedTargetIds.includes(chatId);
 
-      // We only update lastEventAt for TARGET chats to ensure watchdog catches stalls for what we actually care about
-      if (isTarget) {
-        lastEventAt = Date.now();
+      if (!isTarget) {
+        return;
       }
+
+      // We only update lastEventAt for TARGET chats to ensure watchdog catches stalls for what we actually care about
+      lastEventAt = Date.now();
 
       const body = event.message.message || "";
       const date = event.message.date;
       const peerId = event.message.peerId?.className || "unknown";
 
-      if (isTarget) {
-        logger.log(
-          `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${rawChatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
-        );
-      }
+      logger.log(
+        `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${rawChatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
+      );
 
-      try {
-        const handled = await processMessage(adaptMtprotoMessage(event.message), {
-          targetChatIds,
-          chatCityMap: config.chatCityMap,
-        });
-        if (handled) {
-          state.lastMessageAt = new Date().toISOString();
+      // We DON'T await processMessage directly to prevent blocking the update loop
+      // instead we use a timeout and run it in the "background" relative to the handler
+      (async () => {
+        try {
+          const handled = await withTimeout(
+            processMessage(adaptMtprotoMessage(event.message), {
+              targetChatIds,
+              chatCityMap: config.chatCityMap,
+            }),
+            config.messageProcessTimeoutMs,
+            `Message ${msgId}`
+          );
+          if (handled) {
+            state.lastMessageAt = new Date().toISOString();
+          }
+        } catch (err) {
+          state.lastError = err.message;
+          logger.error(`[${sessionCfg.name}] Event processing error (msgId=${msgId}): ${err.message}`);
         }
-      } catch (err) {
-        state.lastError = err.message;
-        logger.error(`[${sessionCfg.name}] Event processing error: ${err.message}`);
-      }
+      })();
     };
 
     const requestRestart = (reason, options = {}) => {
