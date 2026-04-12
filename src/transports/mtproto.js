@@ -76,8 +76,10 @@ async function processHistory(client, config, options = {}) {
       (result) => result.status === "fulfilled" && result.value === true
     ).length;
 
+    // History processing is faster now
     if (index + config.historyBatchSize < fresh.length) {
-      await sleep(300);
+      // Smallest possible yield to event loop
+      await new Promise(r => setImmediate(r));
     }
   }
 
@@ -144,9 +146,9 @@ export function createMtprotoTransport({ config, state }) {
     let probeTimer = null;
     let lastEventAt = Date.now();
     let lastLoggedState = null;
+    let queueLength = 0;
 
     const targetChatIds = config.targetChatIds || [];
-    const messageEvent = new NewMessage({}); // Listen to all, filter manually
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
     const normalizedTargetIds = targetChatIds.map(normalizeChatId);
@@ -154,6 +156,9 @@ export function createMtprotoTransport({ config, state }) {
     let processingQueue = Promise.resolve();
 
     const onNewMessage = async (event) => {
+      // ANY incoming message (target or not) updates the watchdog to confirm the stream is alive
+      lastEventAt = Date.now();
+
       const msgId = event.message.id;
       const rawChatId = event.message.chatId?.toString() || "unknown";
       const chatId = normalizeChatId(rawChatId);
@@ -163,15 +168,9 @@ export function createMtprotoTransport({ config, state }) {
         return;
       }
 
-      // We only update lastEventAt for TARGET chats to ensure watchdog catches stalls for what we actually care about
-      lastEventAt = Date.now();
-
-      const body = event.message.message || "";
-      const date = event.message.date;
-      const peerId = event.message.peerId?.className || "unknown";
-
-      logger.log(
-        `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${rawChatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
+      queueLength++;
+      logger.verbose(
+        `[${sessionCfg.name}] Incoming: msgId=${msgId} chatId=${rawChatId} queueLength=${queueLength}`
       );
 
       // We use a promise chain to process messages sequentially with a delay
@@ -194,9 +193,12 @@ export function createMtprotoTransport({ config, state }) {
         } catch (err) {
           state.lastError = err.message;
           logger.error(`[${sessionCfg.name}] Event processing error (msgId=${msgId}): ${err.message}`);
+        } finally {
+          queueLength = Math.max(0, queueLength - 1);
         }
       });
     };
+
 
     const requestRestart = (reason, options = {}) => {
       if (stopRequested) return;
@@ -272,26 +274,34 @@ export function createMtprotoTransport({ config, state }) {
       state.transportHealthy = true;
       logger.log(`Successfully connected session ${sessionCfg.name} as @${accountLabel}`);
 
+      // 1. First, register the event handlers so we don't miss anything while syncing
+      client.addEventHandler(onNewMessage, new NewMessage({}));
+      // onConnectionState already added above
+      logger.log(`[${sessionCfg.name}] MTProto: event handlers registered`);
+
+      // 2. Then sync history
       logger.log(
         `[${sessionCfg.name}] MTProto: syncing chat history (${targetChatIds.length} chat(s))...`
       );
       for (const chatId of targetChatIds) {
-        await processHistory(
-          client,
-          { ...config, chatId },
-          { targetChatIds, chatCityMap: config.chatCityMap }
-        );
+        try {
+          await processHistory(
+            client,
+            { ...config, chatId },
+            { targetChatIds, chatCityMap: config.chatCityMap }
+          );
+        } catch (err) {
+          logger.error(`[${sessionCfg.name}] History sync failed for ${chatId}: ${err.message}`);
+        }
       }
       logger.log(`[${sessionCfg.name}] MTProto: chat history sync finished`);
-
-      client.addEventHandler(onNewMessage, messageEvent);
 
       probeTimer = setInterval(async () => {
         if (stopRequested) return;
 
         const idleTime = Date.now() - lastEventAt;
-        if (idleTime > 10 * 60 * 1000) {
-          logger.warn(`[${sessionCfg.name}] Update stream stalled. Restarting...`);
+        if (idleTime > 20 * 60 * 1000) {
+          logger.warn(`[${sessionCfg.name}] Update stream stalled (no activity for 20 min). Restarting...`);
           requestRestart(new Error("Update stream stalled"));
           return;
         }
@@ -302,12 +312,13 @@ export function createMtprotoTransport({ config, state }) {
         }
 
         try {
+          // Probe helps keep the connection alive but SHOULD NOT update lastEventAt, 
+          // because we want lastEventAt to track actual messages/updates to detect stalls.
           await withTimeout(
             client.invoke(new Api.updates.GetState()),
             config.connectionProbeTimeoutMs,
             "updates.GetState"
           );
-          lastEventAt = Date.now();
         } catch (err) {
           logger.warn(`[${sessionCfg.name}] Watchdog probe failed: ${err.message}`);
           requestRestart(err);
@@ -331,7 +342,7 @@ export function createMtprotoTransport({ config, state }) {
       if (probeTimer) clearInterval(probeTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       try {
-        client.removeEventHandler(onNewMessage, messageEvent);
+        client.removeEventHandler(onNewMessage);
         client.removeEventHandler(onConnectionState, connectionEvent);
       } catch (_) {}
       try {
@@ -387,8 +398,6 @@ export function createMtprotoTransport({ config, state }) {
     },
     async stop() {
       stopRequested = true;
-      // В режиме параллельных сессий currentClient хранит только последний запущенный, 
-      // но runSession сам закрывает клиент в finally.
     },
   };
 }
