@@ -151,6 +151,8 @@ export function createMtprotoTransport({ config, state }) {
 
     const normalizedTargetIds = targetChatIds.map(normalizeChatId);
 
+    let processingQueue = Promise.resolve();
+
     const onNewMessage = async (event) => {
       const msgId = event.message.id;
       const rawChatId = event.message.chatId?.toString() || "unknown";
@@ -172,10 +174,12 @@ export function createMtprotoTransport({ config, state }) {
         `[${sessionCfg.name}] Telegram: newMessage msgId=${msgId} chatId=${rawChatId} peer=${peerId} date=${date} out=${event.message.out ? "1" : "0"} len=${body.length} text="${Logger.truncate(body, 400)}"`
       );
 
-      // We DON'T await processMessage directly to prevent blocking the update loop
-      // instead we use a timeout and run it in the "background" relative to the handler
-      (async () => {
+      // We use a promise chain to process messages sequentially with a delay
+      processingQueue = processingQueue.then(async () => {
         try {
+          // Add a small delay between tasks to avoid overwhelming the API/DB
+          await sleep(config.messageIntervalMs);
+
           const handled = await withTimeout(
             processMessage(adaptMtprotoMessage(event.message), {
               targetChatIds,
@@ -191,7 +195,7 @@ export function createMtprotoTransport({ config, state }) {
           state.lastError = err.message;
           logger.error(`[${sessionCfg.name}] Event processing error (msgId=${msgId}): ${err.message}`);
         }
-      })();
+      });
     };
 
     const requestRestart = (reason, options = {}) => {

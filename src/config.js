@@ -182,6 +182,7 @@ export const config = {
   stateFilePath: optionalEnv("STATE_FILE_PATH", ".runtime/bot-state.json"),
   apiTimeoutMs: optionalNumber("API_TIMEOUT_MS", 30000),
   messageProcessTimeoutMs: optionalNumber("MESSAGE_PROCESS_TIMEOUT_MS", 120000),
+  messageIntervalMs: optionalNumber("MESSAGE_INTERVAL_MS", 3000),
 };
 
 export function getWebhookUrl() {

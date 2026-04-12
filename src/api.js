@@ -39,6 +39,11 @@ async function fetchWithRetry(url, options, { retries = 3, backoffMs = 500 } = {
  */
 export async function createPost(payload) {
   const start = Date.now();
+  const requestBody = {
+    token: config.botToken,
+    ...payload,
+  };
+
   const res = await fetchWithRetry(
     config.apiUrl,
     {
@@ -47,20 +52,26 @@ export async function createPost(payload) {
         "Content-Type": "application/json",
         "x-bot-token":  config.botToken,
       },
-      body: JSON.stringify({
-        token: config.botToken,
-        ...payload,
-      }),
+      body: JSON.stringify(requestBody),
     },
     { retries: 3, backoffMs: 500 }
   );
 
-  const data = await res.json();
+  let data;
+  const rawText = await res.text();
+  try {
+    data = JSON.parse(rawText);
+  } catch (_) {
+    data = { error: rawText };
+  }
+
   const duration = Date.now() - start;
 
   if (!res.ok) {
-    logger.error(`Failed to create post: ${data.error || `HTTP ${res.status}`}`);
-    throw new Error(data.error || `HTTP ${res.status}`);
+    const errorMsg = data.error || data.message || rawText || `HTTP ${res.status}`;
+    const errorDetails = data.details ? ` (${data.details})` : "";
+    logger.error(`Failed to create post: ${errorMsg}${errorDetails} | Payload: ${JSON.stringify(payload)}`);
+    throw new Error(`${errorMsg}${errorDetails}`);
   }
 
   logger.debug(`Post created successfully in ${duration}ms (id=${data.post?.id})`);
