@@ -148,6 +148,7 @@ export async function processMessage(message, options = {}) {
         comment: text,
         coords,
         author,
+        date: message.date,
       });
 
       return { street, type, id: result.post?.id };
