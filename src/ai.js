@@ -4,7 +4,7 @@ import { Logger } from "./logger.js";
 
 const logger = new Logger("AI");
 
-const OPENROUTER_MODEL = "google/gemini-2.0-flash-001:free";
+const OPENROUTER_MODEL = "mistralai/mistral-7b-instruct:free";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Rate-limiter: serializes AI requests + enforces min gap ──────────
