@@ -164,6 +164,7 @@ export const config = {
   botToken: optionalEnv("BOT_TOKEN", "change-me-bot-secret"),
 
   openrouterKey: requiredEnv("OPENROUTER_API_KEY"),
+  googleAiKey: optionalEnv("GOOGLE_AI_API_KEY"),
   yandexKey: requiredEnv("YANDEX_MAPS_API_KEY"),
 
   defaultCity: optionalEnv("DEFAULT_CITY", "Шумиха"),

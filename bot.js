@@ -55,6 +55,21 @@ async function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+process.on("unhandledRejection", (reason) => {
+  const msg = reason?.message || String(reason);
+  if (/TIMEOUT/i.test(msg) && /updates\.js/.test(reason?.stack || "")) {
+    logger.warn(`Swallowed telegram updates loop TIMEOUT (library will auto-recover): ${msg}`);
+    return;
+  }
+  logger.error(`Unhandled rejection: ${msg}`);
+  if (reason?.stack) logger.error(reason.stack);
+});
+
+process.on("uncaughtException", (err) => {
+  logger.error(`Uncaught exception: ${err.message}`);
+  if (err.stack) logger.error(err.stack);
+});
+
 async function main() {
   logger.log(`Starting bot in ${config.mode} mode`);
   await server.start();

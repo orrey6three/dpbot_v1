@@ -117,15 +117,20 @@ export async function processMessage(message, options = {}) {
     `Processor: handling msgId=${message.id} chatId=${rawChatId} norm=${chatId} city=${cityName} author=${author} replyTo=${message.replyToMessageId ?? "—"} text="${textPreview}"`
   );
 
-  processedCache.add(chatId, message.id);
-
   let posts;
   try {
     posts = await parseMessageWithAI(text);
   } catch (err) {
     logger.error(`Processor: AI / OpenRouter failed — ${err.message}`);
+    if (!err.transient) {
+      processedCache.add(chatId, message.id);
+    } else {
+      logger.warn(`Processor: leaving msgId=${message.id} unprocessed due to transient AI error — will retry on next sighting`);
+    }
     return false;
   }
+
+  processedCache.add(chatId, message.id);
 
   if (!posts.length) {
     logger.log(

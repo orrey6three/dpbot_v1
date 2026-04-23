@@ -81,13 +81,9 @@ class Logger {
   }
 
   print(level, color, message, context) {
-    const pid = process.pid;
-    const timestamp = Logger.getTimestamp();
     const formattedLevel = level.padEnd(7);
-    
+
     process.stdout.write(
-      `${colors.green}[Bot] ${pid}  - ${colors.reset}` +
-      `${timestamp}   ` +
       `${color}${formattedLevel}${colors.reset} ` +
       `${colors.yellow}[${context}]${colors.reset} ` +
       `${color}${message}${colors.reset}\n`
