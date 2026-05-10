@@ -4,11 +4,10 @@ import { Logger } from "./logger.js";
 
 const logger = new Logger("AI");
 
-const OPENROUTER_MODEL = "mistralai/mistral-7b-instruct:free";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ── Rate-limiter: serializes AI requests + enforces min gap ──────────
-const MIN_REQUEST_GAP_MS = 5000;       // 5s gap for OpenRouter free tier
+// Сериализация запросов (Groq быстрый; лимиты — см. console.groq.com)
+const MIN_REQUEST_GAP_MS = Number.parseInt(process.env.AI_MIN_GAP_MS || "", 10) || 1500;
 let _lastRequestAt = 0;
 let _queue = Promise.resolve();
 
@@ -115,85 +114,62 @@ const SYSTEM_PROMPT = `Ты — интеллектуальный парсер с
  * @param {string} text
  * @returns {Promise<Array<{ street: string, type: "ДПС" | "Чисто" }>>}
  */
-const MAX_AI_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 3000;
-const RETRY_429_BASE_DELAY_MS = 10000;
+
+/** Ошибки, при которых пробуем следующую модель в цепочке */
+function shouldFailOverToNextModel(status) {
+  return (
+    status === 429 ||
+    status === 408 ||
+    status === 425 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503
+  );
+}
 
 function isTransientStatus(status) {
   return status === 408 || status === 429 || status === 425 || (status >= 500 && status <= 599);
 }
 
-export function parseMessageWithAI(text) {
-  return enqueue(() => _callOpenRouter(text));
+/** @param {Response} res */
+function retryAfterMsFromResponse(res) {
+  const raw = res.headers?.get?.("retry-after");
+  if (!raw) return null;
+  const sec = Number.parseInt(raw, 10);
+  if (!Number.isFinite(sec) || sec < 1) return null;
+  return Math.min(sec * 1000, 600_000);
 }
 
-async function _callOpenRouter(text) {
-  const start = Date.now();
-  logger.log(
-    `OpenRouter: request start model=${OPENROUTER_MODEL} chars=${String(text || "").length}`
-  );
-
-  let res;
-  let lastErr;
-  for (let attempt = 1; attempt <= MAX_AI_ATTEMPTS; attempt++) {
-    try {
-      res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method:  "POST",
-        timeout: config.apiTimeoutMs,
-        headers: {
-          "Authorization": `Bearer ${config.openrouterKey}`,
-          "Content-Type":  "application/json",
-          "HTTP-Referer":  "https://dpsposts.vercel.app",
-          "X-Title":       "DPS Posts Bot",
-        },
-        body: JSON.stringify({
-          model:       OPENROUTER_MODEL,
-          max_tokens:  300,
-          temperature: 0,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user",   content: text },
-          ],
-        }),
-      });
-    } catch (netErr) {
-      lastErr = netErr;
-      if (attempt < MAX_AI_ATTEMPTS) {
-        const delay = RETRY_BASE_DELAY_MS * attempt;
-        logger.warn(`OpenRouter: network error (attempt ${attempt}/${MAX_AI_ATTEMPTS}) — ${netErr.message}; retry in ${delay}ms`);
-        await sleep(delay);
-        continue;
-      }
-      const e = new Error(`OpenRouter network failure: ${netErr.message}`);
-      e.transient = true;
-      throw e;
-    }
-
-    if (res.ok) break;
-
-    const errBody = await res.text();
-    const transient = isTransientStatus(res.status);
-    logger.error(`OpenRouter: HTTP ${res.status} — ${Logger.truncate(errBody, 200)}`);
-
-    if (transient && attempt < MAX_AI_ATTEMPTS) {
-      const delay = res.status === 429
-        ? RETRY_429_BASE_DELAY_MS * attempt
-        : RETRY_BASE_DELAY_MS * attempt;
-      logger.warn(`OpenRouter: transient ${res.status} (attempt ${attempt}/${MAX_AI_ATTEMPTS}); retry in ${delay}ms`);
-      await sleep(delay);
-      continue;
-    }
-
-    const err = new Error(`OpenRouter HTTP ${res.status}: ${errBody}`);
-    err.transient = transient;
-    err.status = res.status;
-    throw err;
+async function groqChatCompletion(model, text) {
+  const body = {
+    model,
+    max_tokens: 512,
+    temperature: 0,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: text },
+    ],
+  };
+  if (config.groqJsonMode) {
+    body.response_format = { type: "json_object" };
   }
+  return fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    signal: AbortSignal.timeout(config.apiTimeoutMs),
+    headers: {
+      Authorization: `Bearer ${config.groqKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
 
+async function parseGroqSuccessResponse(res, start) {
   const data = await res.json();
   const raw = data.choices?.[0]?.message?.content?.trim() || "";
   const elapsed = Date.now() - start;
-  logger.log(`OpenRouter: response OK in ${elapsed}ms, rawChars=${raw.length}`);
+  logger.log(`Groq: response OK in ${elapsed}ms, rawChars=${raw.length}`);
 
   const cleaned = raw
     .replace(/^```json\s*/i, "")
@@ -206,12 +182,16 @@ async function _callOpenRouter(text) {
     parsed = JSON.parse(cleaned);
   } catch {
     logger.error(`AI: failed to parse JSON — ${Logger.truncate(cleaned, 120)}`);
-    return [];
+    const e = new Error("Groq: invalid JSON in model response");
+    e.transient = true;
+    throw e;
   }
 
   if (!Array.isArray(parsed.posts)) {
-    logger.warn("AI: response had no posts array, treating as empty");
-    return [];
+    logger.warn("AI: response had no posts array");
+    const e = new Error("Groq: response missing posts array");
+    e.transient = true;
+    throw e;
   }
 
   const filtered = parsed.posts.filter(
@@ -227,4 +207,86 @@ async function _callOpenRouter(text) {
   }
 
   return filtered;
+}
+
+export function parseMessageWithAI(text) {
+  return enqueue(() => _callGroq(text));
+}
+
+async function _callGroq(text) {
+  const start = Date.now();
+  const models = config.groqModelChain;
+  const maxRounds = config.groqMaxRounds;
+  let lastFailure = { status: 0, body: "" };
+
+  roundLoop: for (let round = 1; round <= maxRounds; round++) {
+    for (let mi = 0; mi < models.length; mi++) {
+      const model = models[mi];
+      const isLastInRound = mi === models.length - 1;
+      logger.log(
+        `Groq: model=${model} round=${round}/${maxRounds} chars=${String(text || "").length}`
+      );
+
+      let res;
+      try {
+        res = await groqChatCompletion(model, text);
+      } catch (netErr) {
+        logger.warn(`Groq: network error — ${netErr.message}`);
+        if (round >= maxRounds) {
+          const e = new Error(`Groq network failure: ${netErr.message}`);
+          e.transient = true;
+          throw e;
+        }
+        await sleep(RETRY_BASE_DELAY_MS * round);
+        continue roundLoop;
+      }
+
+      if (res.ok) {
+        return await parseGroqSuccessResponse(res, start);
+      }
+
+      const retryAfterMs = retryAfterMsFromResponse(res);
+      const errBody = await res.text();
+      lastFailure = { status: res.status, body: errBody };
+      logger.error(`Groq: HTTP ${res.status} — ${Logger.truncate(errBody, 200)}`);
+
+      if (shouldFailOverToNextModel(res.status)) {
+        if (res.status === 429 && !isLastInRound) {
+          const waitMs = retryAfterMs ?? config.groq429FailoverDelayMs;
+          logger.warn(
+            `Groq: HTTP 429 on ${model} — waiting ${waitMs}ms before next model${retryAfterMs ? " (Retry-After)" : ""}`
+          );
+          await sleep(waitMs);
+        } else if (res.status !== 429 && !isLastInRound) {
+          const d = config.groqTransientFailoverDelayMs;
+          logger.warn(`Groq: HTTP ${res.status} on ${model} — waiting ${d}ms before next model`);
+          await sleep(d);
+        } else {
+          logger.warn(`Groq: failover after HTTP ${res.status} on ${model} → cooldown or next round`);
+        }
+        continue;
+      }
+
+      const err = new Error(`Groq HTTP ${res.status}: ${errBody}`);
+      err.transient = isTransientStatus(res.status);
+      err.status = res.status;
+      throw err;
+    }
+
+    if (round < maxRounds) {
+      const delay = Math.min(
+        config.groqRateLimitCooldownMs * round,
+        config.groqRateLimitCooldownMaxMs
+      );
+      logger.warn(
+        `Groq: all ${models.length} model(s) exhausted (last HTTP ${lastFailure.status}), cooldown ${delay}ms`
+      );
+      await sleep(delay);
+    }
+  }
+
+  const err = new Error(`Groq HTTP ${lastFailure.status}: ${lastFailure.body}`);
+  err.transient = isTransientStatus(lastFailure.status);
+  err.status = lastFailure.status;
+  throw err;
 }

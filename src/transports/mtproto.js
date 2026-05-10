@@ -60,7 +60,9 @@ async function processHistory(client, config, options = {}) {
   const fresh = messages.filter((message) => message.date >= cutoff).reverse();
 
   if (!fresh.length) {
-    logger.verbose(`No fresh messages found in the last 2 hours for ${chatId}`);
+    logger.verbose(
+      `No fresh messages within maxMsgAgeSeconds (${config.maxMsgAgeSeconds}s) for ${chatId}`
+    );
     return;
   }
 

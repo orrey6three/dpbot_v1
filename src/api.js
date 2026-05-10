@@ -14,7 +14,8 @@ async function fetchWithRetry(url, options, { retries = 3, backoffMs = 500 } = {
   let lastError;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const res = await fetch(url, { ...options, timeout: config.apiTimeoutMs });
+      const signal = options.signal ?? AbortSignal.timeout(config.apiTimeoutMs);
+      const res = await fetch(url, { ...options, signal });
       return res;
     } catch (err) {
       lastError = err;
@@ -87,8 +88,12 @@ export async function deletePost(postId) {
   if (!postId) return false;
   const start = Date.now();
   try {
+    const deleteUrl = new URL(config.apiUrl);
+    deleteUrl.searchParams.set("id", String(postId));
+    deleteUrl.searchParams.set("token", config.botToken);
+
     const res = await fetchWithRetry(
-      `${config.apiUrl}?id=${postId}&token=${config.botToken}`,
+      deleteUrl.toString(),
       {
         method:  "DELETE",
         headers: {

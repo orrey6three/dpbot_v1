@@ -45,7 +45,14 @@ volumes:
 
 Обязательные для обработки сообщений:
 
-- `OPENROUTER_API_KEY`
+- `GROQ_API_KEY` — ключ в [Groq Console](https://console.groq.com/)
+- необязательно для Groq:
+  - `GROQ_MODEL` (по умолчанию `llama-3.3-70b-versatile`)
+  - `GROQ_MODEL_FALLBACKS` — запасные через запятую при 429/5xx (дефолт: `llama-3.1-8b-instant`)
+  - или `GROQ_MODELS=model1,model2,...` — полный порядок моделей
+  - `GROQ_JSON_MODE=true` — `response_format: json_object` (если модель ругается — поставь `false`)
+  - `AI_MIN_GAP_MS` — пауза между LLM-запросами (по умолчанию **1500**)
+  - `GROQ_429_FAILOVER_DELAY_MS` (15000), `GROQ_TRANSIENT_FAILOVER_DELAY_MS` (5000), `GROQ_MAX_ROUNDS` (5), `GROQ_RATE_LIMIT_COOLDOWN_MS` (30000), `GROQ_RATE_LIMIT_COOLDOWN_MAX_MS` (180000)
 - `YANDEX_MAPS_API_KEY`
 - `API_URL`
 - `BOT_TOKEN`

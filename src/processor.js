@@ -121,7 +121,7 @@ export async function processMessage(message, options = {}) {
   try {
     posts = await parseMessageWithAI(text);
   } catch (err) {
-    logger.error(`Processor: AI / OpenRouter failed — ${err.message}`);
+    logger.error(`Processor: AI / Groq failed — ${err.message}`);
     if (!err.transient) {
       processedCache.add(chatId, message.id);
     } else {
@@ -130,9 +130,8 @@ export async function processMessage(message, options = {}) {
     return false;
   }
 
-  processedCache.add(chatId, message.id);
-
   if (!posts.length) {
+    processedCache.add(chatId, message.id);
     logger.log(
       `Processor: done msgId=${message.id} — no API posts (AI returned no patrol rows)`
     );
@@ -172,11 +171,23 @@ export async function processMessage(message, options = {}) {
     }
   }
 
-  if (successCount > 0) {
+  if (successCount === posts.length) {
+    processedCache.add(chatId, message.id);
     logger.log(
       `Processor: finished msgId=${message.id} — saved ${successCount}/${posts.length} post(s)`
     );
+    return true;
   }
 
+  if (successCount === 0) {
+    logger.warn(
+      `Processor: msgId=${message.id} — all ${posts.length} post(s) failed; not marking processed so it can retry`
+    );
+    return false;
+  }
+
+  logger.warn(
+    `Processor: msgId=${message.id} — partial success ${successCount}/${posts.length}; not marking processed (retry may duplicate saved posts)`
+  );
   return true;
 }

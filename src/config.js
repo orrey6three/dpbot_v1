@@ -49,6 +49,19 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
+function getGroqModelChain() {
+  const defaultPrimary = "llama-3.3-70b-versatile";
+  const csv = optionalEnv("GROQ_MODELS");
+  if (csv) {
+    const ids = [...new Set(splitCsv(csv))];
+    return ids.length ? ids : [defaultPrimary];
+  }
+  const primary = optionalEnv("GROQ_MODEL", defaultPrimary);
+  const fallbacks = splitCsv(optionalEnv("GROQ_MODEL_FALLBACKS", "llama-3.1-8b-instant"));
+  const chain = [...new Set([primary, ...fallbacks].filter(Boolean))];
+  return chain.length ? chain : [defaultPrimary];
+}
+
 function getTargetChats() {
   const namedChats = [
     { city: "Шумиха", id: optionalEnv("CHAT_SHUMIKHA_ID") },
@@ -134,6 +147,8 @@ const targetChats = getTargetChats();
 
 const sessions = getSessions();
 
+const groqModelChain = getGroqModelChain();
+
 export const config = {
   mode,
   sessions,
@@ -151,6 +166,7 @@ export const config = {
   webhookSetOnStart: optionalBoolean("WEBHOOK_SET_ON_START", true),
   webhookMonitorEnabled: optionalBoolean("WEBHOOK_MONITOR_ENABLED", true),
   webhookMonitorIntervalMs: optionalNumber("WEBHOOK_MONITOR_INTERVAL_MS", 5 * 60 * 1000),
+  webhookMaxBodyBytes: optionalNumber("WEBHOOK_MAX_BODY_BYTES", 512 * 1024),
 
   httpPort: port,
   healthPath,
@@ -163,8 +179,15 @@ export const config = {
   apiUrl: optionalEnv("API_URL", "http://localhost:3000/api/patrol"),
   botToken: optionalEnv("BOT_TOKEN", "change-me-bot-secret"),
 
-  openrouterKey: requiredEnv("OPENROUTER_API_KEY"),
-  googleAiKey: optionalEnv("GOOGLE_AI_API_KEY"),
+  groqKey: requiredEnv("GROQ_API_KEY"),
+  groqModel: groqModelChain[0] ?? "llama-3.3-70b-versatile",
+  groqModelChain,
+  groqJsonMode: optionalBoolean("GROQ_JSON_MODE", true),
+  groqMaxRounds: optionalNumber("GROQ_MAX_ROUNDS", 5),
+  groq429FailoverDelayMs: optionalNumber("GROQ_429_FAILOVER_DELAY_MS", 15000),
+  groqTransientFailoverDelayMs: optionalNumber("GROQ_TRANSIENT_FAILOVER_DELAY_MS", 5000),
+  groqRateLimitCooldownMs: optionalNumber("GROQ_RATE_LIMIT_COOLDOWN_MS", 30000),
+  groqRateLimitCooldownMaxMs: optionalNumber("GROQ_RATE_LIMIT_COOLDOWN_MAX_MS", 180000),
   yandexKey: requiredEnv("YANDEX_MAPS_API_KEY"),
 
   defaultCity: optionalEnv("DEFAULT_CITY", "Шумиха"),

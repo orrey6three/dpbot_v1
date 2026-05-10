@@ -13,6 +13,7 @@ async function telegramApi(config, method, payload = {}) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(config.apiTimeoutMs),
   });
 
   const data = await res.json();

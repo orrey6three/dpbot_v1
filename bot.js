@@ -68,6 +68,7 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (err) => {
   logger.error(`Uncaught exception: ${err.message}`);
   if (err.stack) logger.error(err.stack);
+  process.exit(1);
 });
 
 async function main() {

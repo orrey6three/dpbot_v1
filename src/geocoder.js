@@ -15,7 +15,7 @@ export async function geocodeStreet(street, city = config.defaultCity) {
     const query = encodeURIComponent(`${city}, ${street}`);
     const url   = `https://geocode-maps.yandex.ru/1.x/?apikey=${config.yandexKey}&format=json&geocode=${query}`;
 
-    const res = await fetch(url, { timeout: config.apiTimeoutMs });
+    const res = await fetch(url, { signal: AbortSignal.timeout(config.apiTimeoutMs) });
     if (!res.ok) throw new Error(`Yandex HTTP ${res.status}`);
 
     const data    = await res.json();

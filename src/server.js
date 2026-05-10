@@ -4,24 +4,41 @@ import { Logger } from "./logger.js";
 
 const logger = new Logger("HTTPServer");
 
-function readBody(req) {
+function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
+    let total = 0;
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
 
     req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        fail(Object.assign(new Error("payload too large"), { code: "PAYLOAD_TOO_LARGE" }));
+        req.destroy();
+        return;
+      }
       chunks.push(chunk);
     });
 
     req.on("end", () => {
+      if (settled) return;
       try {
         const raw = Buffer.concat(chunks).toString("utf8");
-        resolve(raw ? JSON.parse(raw) : {});
+        const parsed = raw ? JSON.parse(raw) : {};
+        settled = true;
+        resolve(parsed);
       } catch (err) {
-        reject(err);
+        fail(err);
       }
     });
 
-    req.on("error", reject);
+    req.on("error", fail);
   });
 }
 
@@ -85,7 +102,7 @@ export function createServer({ config, state, onWebhookUpdate }) {
       }
 
       try {
-        const update = await readBody(req);
+        const update = await readBody(req, config.webhookMaxBodyBytes);
         state.lastWebhookAt = new Date().toISOString();
         sendJson(res, 200, { ok: true });
         queueMicrotask(() => {
@@ -96,7 +113,11 @@ export function createServer({ config, state, onWebhookUpdate }) {
         });
       } catch (err) {
         state.lastError = err.message;
-        sendJson(res, 400, { ok: false, error: "invalid json" });
+        const tooLarge = err.code === "PAYLOAD_TOO_LARGE";
+        sendJson(res, tooLarge ? 413 : 400, {
+          ok: false,
+          error: tooLarge ? "payload too large" : "invalid json",
+        });
       }
       return;
     }
