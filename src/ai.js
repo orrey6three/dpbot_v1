@@ -6,7 +6,6 @@ const logger = new Logger("AI");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Сериализация запросов (Groq быстрый; лимиты — см. console.groq.com)
 const MIN_REQUEST_GAP_MS = Number.parseInt(process.env.AI_MIN_GAP_MS || "", 10) || 1500;
 let _lastRequestAt = 0;
 let _queue = Promise.resolve();
