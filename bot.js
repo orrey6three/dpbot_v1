@@ -3,8 +3,10 @@ import { createServer } from "./src/server.js";
 import { createMtprotoTransport } from "./src/transports/mtproto.js";
 import { createWebhookTransport } from "./src/transports/webhook.js";
 import { Logger } from "./src/logger.js";
+import { startVotesCleanupScheduler } from "./src/cron/votesCleanupScheduler.js";
 
 const logger = new Logger("Main");
+let stopVotesCron = () => {};
 
 const state = {
   mode: config.mode,
@@ -49,6 +51,12 @@ async function shutdown(signal) {
     logger.error(`Error during HTTP server shutdown: ${err.message}`);
   }
 
+  try {
+    stopVotesCron();
+  } catch (err) {
+    logger.error(`Error stopping votes cron: ${err.message}`);
+  }
+
   process.exit(0);
 }
 
@@ -75,6 +83,8 @@ async function main() {
   logger.log(`Starting bot in ${config.mode} mode`);
   await server.start();
   await transport.start();
+
+  stopVotesCron = startVotesCleanupScheduler(new Logger("VotesCron"));
 
   if (config.mode === "webhook") {
     logger.log("Waiting for incoming webhook requests...");
