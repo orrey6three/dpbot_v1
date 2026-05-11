@@ -49,15 +49,17 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
-function getGroqModelChain() {
-  const defaultPrimary = "llama-3.3-70b-versatile";
-  const csv = optionalEnv("GROQ_MODELS");
+function getOpenRouterModelChain() {
+  const defaultPrimary = "google/gemini-2.5-flash";
+  const csv = optionalEnv("OPENROUTER_MODELS");
   if (csv) {
     const ids = [...new Set(splitCsv(csv))];
     return ids.length ? ids : [defaultPrimary];
   }
-  const primary = optionalEnv("GROQ_MODEL", defaultPrimary);
-  const fallbacks = splitCsv(optionalEnv("GROQ_MODEL_FALLBACKS", "llama-3.1-8b-instant"));
+  const primary = optionalEnv("OPENROUTER_MODEL", defaultPrimary);
+  const fallbacks = splitCsv(
+    optionalEnv("OPENROUTER_MODEL_FALLBACKS", "google/gemini-flash-1.5")
+  );
   const chain = [...new Set([primary, ...fallbacks].filter(Boolean))];
   return chain.length ? chain : [defaultPrimary];
 }
@@ -147,7 +149,7 @@ const targetChats = getTargetChats();
 
 const sessions = getSessions();
 
-const groqModelChain = getGroqModelChain();
+const openrouterModelChain = getOpenRouterModelChain();
 
 export const config = {
   mode,
@@ -179,15 +181,19 @@ export const config = {
   apiUrl: optionalEnv("API_URL", "http://localhost:3000/api/patrol"),
   botToken: optionalEnv("BOT_TOKEN", "change-me-bot-secret"),
 
-  groqKey: requiredEnv("GROQ_API_KEY"),
-  groqModel: groqModelChain[0] ?? "llama-3.3-70b-versatile",
-  groqModelChain,
-  groqJsonMode: optionalBoolean("GROQ_JSON_MODE", true),
-  groqMaxRounds: optionalNumber("GROQ_MAX_ROUNDS", 5),
-  groq429FailoverDelayMs: optionalNumber("GROQ_429_FAILOVER_DELAY_MS", 15000),
-  groqTransientFailoverDelayMs: optionalNumber("GROQ_TRANSIENT_FAILOVER_DELAY_MS", 5000),
-  groqRateLimitCooldownMs: optionalNumber("GROQ_RATE_LIMIT_COOLDOWN_MS", 30000),
-  groqRateLimitCooldownMaxMs: optionalNumber("GROQ_RATE_LIMIT_COOLDOWN_MAX_MS", 180000),
+  openrouterKey: requiredEnv("OPENROUTER_API_KEY"),
+  openrouterModelChain,
+  openrouterModel: openrouterModelChain[0] ?? "google/gemini-2.5-flash",
+  openrouterJsonMode: optionalBoolean("OPENROUTER_JSON_MODE", true),
+  openrouterHttpReferer: optionalEnv("OPENROUTER_HTTP_REFERER"),
+  openrouterAppTitle: optionalEnv("OPENROUTER_APP_TITLE", "DPS Telegram bot"),
+  openrouterChatUrl: "https://openrouter.ai/api/v1/chat/completions",
+
+  llmMaxRounds: optionalNumber("LLM_MAX_ROUNDS", 5),
+  llm429FailoverDelayMs: optionalNumber("LLM_429_FAILOVER_DELAY_MS", 15000),
+  llmTransientFailoverDelayMs: optionalNumber("LLM_TRANSIENT_FAILOVER_DELAY_MS", 5000),
+  llmRateLimitCooldownMs: optionalNumber("LLM_RATE_LIMIT_COOLDOWN_MS", 30000),
+  llmRateLimitCooldownMaxMs: optionalNumber("LLM_RATE_LIMIT_COOLDOWN_MAX_MS", 180000),
   yandexKey: requiredEnv("YANDEX_MAPS_API_KEY"),
 
   defaultCity: optionalEnv("DEFAULT_CITY", "Шумиха"),

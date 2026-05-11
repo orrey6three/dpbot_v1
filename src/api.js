@@ -34,6 +34,23 @@ async function fetchWithRetry(url, options, { retries = 3, backoffMs = 500 } = {
  */
 
 /**
+ * Бэкенд ждёт одну пару `[lat, lon]`. Схлопываем случайное `[[lat, lon]]` с геокодера/старого кода.
+ * @param {unknown} coords
+ * @returns {[number, number] | null | undefined}
+ */
+function flatCoords(coords) {
+  if (coords == null) return coords;
+  if (!Array.isArray(coords) || coords.length === 0) return null;
+  const a = coords[0];
+  const b = coords[1];
+  if (typeof a === "number" && typeof b === "number") return [a, b];
+  if (Array.isArray(a) && a.length >= 2 && typeof a[0] === "number" && typeof a[1] === "number") {
+    return [a[0], a[1]];
+  }
+  return coords;
+}
+
+/**
  * Отправляет новый пост на бэкенд.
  * @param {PostPayload} payload
  * @returns {Promise<object>} ответ сервера
@@ -43,6 +60,7 @@ export async function createPost(payload) {
   const requestBody = {
     token: config.botToken,
     ...payload,
+    coords: flatCoords(payload.coords),
   };
 
   const res = await fetchWithRetry(
@@ -71,7 +89,7 @@ export async function createPost(payload) {
   if (!res.ok) {
     const errorMsg = data.error || data.message || rawText || `HTTP ${res.status}`;
     const errorDetails = data.details ? ` (${data.details})` : "";
-    logger.error(`Failed to create post: ${errorMsg}${errorDetails} | Payload: ${JSON.stringify(payload)}`);
+    logger.debug(`createPost rejected | street=${payload.street} | ${JSON.stringify(requestBody)}`);
     throw new Error(`${errorMsg}${errorDetails}`);
   }
 

@@ -121,7 +121,7 @@ export async function processMessage(message, options = {}) {
   try {
     posts = await parseMessageWithAI(text);
   } catch (err) {
-    logger.error(`Processor: AI / Groq failed — ${err.message}`);
+    logger.error(`Processor: OpenRouter / AI failed — ${err.message}`);
     if (!err.transient) {
       processedCache.add(chatId, message.id);
     } else {
@@ -160,14 +160,31 @@ export async function processMessage(message, options = {}) {
   );
 
   let successCount = 0;
-  for (const result of results) {
+  const failures = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const street = posts[i]?.street ?? "?";
     if (result.status === "fulfilled") {
       successCount++;
       logger.log(
         `Processor: post OK msgId=${message.id} postId=${result.value.id} type=${result.value.type} street=${result.value.street}`
       );
     } else {
-      logger.error(`Processor: post FAILED msgId=${message.id} — ${result.reason?.message}`);
+      const msg = result.reason?.message ?? String(result.reason);
+      failures.push({ street, msg });
+    }
+  }
+
+  if (failures.length) {
+    const byMsg = new Map();
+    for (const { street, msg } of failures) {
+      if (!byMsg.has(msg)) byMsg.set(msg, []);
+      byMsg.get(msg).push(street);
+    }
+    for (const [msg, streets] of byMsg) {
+      logger.warn(
+        `Processor: post FAILED msgId=${message.id} streets=[${streets.join(", ")}] — ${msg}`
+      );
     }
   }
 

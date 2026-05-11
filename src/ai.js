@@ -140,7 +140,7 @@ function retryAfterMsFromResponse(res) {
   return Math.min(sec * 1000, 600_000);
 }
 
-async function groqChatCompletion(model, text) {
+async function llmChatCompletion(model, text) {
   const body = {
     model,
     max_tokens: 512,
@@ -150,25 +150,31 @@ async function groqChatCompletion(model, text) {
       { role: "user", content: text },
     ],
   };
-  if (config.groqJsonMode) {
+  if (config.openrouterJsonMode) {
     body.response_format = { type: "json_object" };
   }
-  return fetch("https://api.groq.com/openai/v1/chat/completions", {
+  /** @type {Record<string, string>} */
+  const headers = {
+    Authorization: `Bearer ${config.openrouterKey}`,
+    "Content-Type": "application/json",
+  };
+  if (config.openrouterHttpReferer) {
+    headers["HTTP-Referer"] = config.openrouterHttpReferer;
+  }
+  headers["X-Title"] = config.openrouterAppTitle || "DPS Telegram bot";
+  return fetch(config.openrouterChatUrl, {
     method: "POST",
     signal: AbortSignal.timeout(config.apiTimeoutMs),
-    headers: {
-      Authorization: `Bearer ${config.groqKey}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(body),
   });
 }
 
-async function parseGroqSuccessResponse(res, start) {
+async function parseLlmSuccessResponse(res, start) {
   const data = await res.json();
   const raw = data.choices?.[0]?.message?.content?.trim() || "";
   const elapsed = Date.now() - start;
-  logger.log(`Groq: response OK in ${elapsed}ms, rawChars=${raw.length}`);
+  logger.log(`OpenRouter: response OK in ${elapsed}ms, rawChars=${raw.length}`);
 
   const cleaned = raw
     .replace(/^```json\s*/i, "")
@@ -181,14 +187,14 @@ async function parseGroqSuccessResponse(res, start) {
     parsed = JSON.parse(cleaned);
   } catch {
     logger.error(`AI: failed to parse JSON — ${Logger.truncate(cleaned, 120)}`);
-    const e = new Error("Groq: invalid JSON in model response");
+    const e = new Error("OpenRouter: invalid JSON in model response");
     e.transient = true;
     throw e;
   }
 
   if (!Array.isArray(parsed.posts)) {
     logger.warn("AI: response had no posts array");
-    const e = new Error("Groq: response missing posts array");
+    const e = new Error("OpenRouter: response missing posts array");
     e.transient = true;
     throw e;
   }
@@ -209,13 +215,13 @@ async function parseGroqSuccessResponse(res, start) {
 }
 
 export function parseMessageWithAI(text) {
-  return enqueue(() => _callGroq(text));
+  return enqueue(() => _callLlm(text));
 }
 
-async function _callGroq(text) {
+async function _callLlm(text) {
   const start = Date.now();
-  const models = config.groqModelChain;
-  const maxRounds = config.groqMaxRounds;
+  const models = config.openrouterModelChain;
+  const maxRounds = config.llmMaxRounds;
   let lastFailure = { status: 0, body: "" };
 
   roundLoop: for (let round = 1; round <= maxRounds; round++) {
@@ -223,16 +229,16 @@ async function _callGroq(text) {
       const model = models[mi];
       const isLastInRound = mi === models.length - 1;
       logger.log(
-        `Groq: model=${model} round=${round}/${maxRounds} chars=${String(text || "").length}`
+        `OpenRouter: model=${model} round=${round}/${maxRounds} chars=${String(text || "").length}`
       );
 
       let res;
       try {
-        res = await groqChatCompletion(model, text);
+        res = await llmChatCompletion(model, text);
       } catch (netErr) {
-        logger.warn(`Groq: network error — ${netErr.message}`);
+        logger.warn(`OpenRouter: network error — ${netErr.message}`);
         if (round >= maxRounds) {
-          const e = new Error(`Groq network failure: ${netErr.message}`);
+          const e = new Error(`OpenRouter network failure: ${netErr.message}`);
           e.transient = true;
           throw e;
         }
@@ -241,32 +247,34 @@ async function _callGroq(text) {
       }
 
       if (res.ok) {
-        return await parseGroqSuccessResponse(res, start);
+        return await parseLlmSuccessResponse(res, start);
       }
 
       const retryAfterMs = retryAfterMsFromResponse(res);
       const errBody = await res.text();
       lastFailure = { status: res.status, body: errBody };
-      logger.error(`Groq: HTTP ${res.status} — ${Logger.truncate(errBody, 200)}`);
+      logger.error(`OpenRouter: HTTP ${res.status} — ${Logger.truncate(errBody, 200)}`);
 
       if (shouldFailOverToNextModel(res.status)) {
         if (res.status === 429 && !isLastInRound) {
-          const waitMs = retryAfterMs ?? config.groq429FailoverDelayMs;
+          const waitMs = retryAfterMs ?? config.llm429FailoverDelayMs;
           logger.warn(
-            `Groq: HTTP 429 on ${model} — waiting ${waitMs}ms before next model${retryAfterMs ? " (Retry-After)" : ""}`
+            `OpenRouter: HTTP 429 on ${model} — waiting ${waitMs}ms before next model${retryAfterMs ? " (Retry-After)" : ""}`
           );
           await sleep(waitMs);
         } else if (res.status !== 429 && !isLastInRound) {
-          const d = config.groqTransientFailoverDelayMs;
-          logger.warn(`Groq: HTTP ${res.status} on ${model} — waiting ${d}ms before next model`);
+          const d = config.llmTransientFailoverDelayMs;
+          logger.warn(`OpenRouter: HTTP ${res.status} on ${model} — waiting ${d}ms before next model`);
           await sleep(d);
         } else {
-          logger.warn(`Groq: failover after HTTP ${res.status} on ${model} → cooldown or next round`);
+          logger.warn(
+            `OpenRouter: failover after HTTP ${res.status} on ${model} → cooldown or next round`
+          );
         }
         continue;
       }
 
-      const err = new Error(`Groq HTTP ${res.status}: ${errBody}`);
+      const err = new Error(`OpenRouter HTTP ${res.status}: ${errBody}`);
       err.transient = isTransientStatus(res.status);
       err.status = res.status;
       throw err;
@@ -274,17 +282,17 @@ async function _callGroq(text) {
 
     if (round < maxRounds) {
       const delay = Math.min(
-        config.groqRateLimitCooldownMs * round,
-        config.groqRateLimitCooldownMaxMs
+        config.llmRateLimitCooldownMs * round,
+        config.llmRateLimitCooldownMaxMs
       );
       logger.warn(
-        `Groq: all ${models.length} model(s) exhausted (last HTTP ${lastFailure.status}), cooldown ${delay}ms`
+        `OpenRouter: all ${models.length} model(s) exhausted (last HTTP ${lastFailure.status}), cooldown ${delay}ms`
       );
       await sleep(delay);
     }
   }
 
-  const err = new Error(`Groq HTTP ${lastFailure.status}: ${lastFailure.body}`);
+  const err = new Error(`OpenRouter HTTP ${lastFailure.status}: ${lastFailure.body}`);
   err.transient = isTransientStatus(lastFailure.status);
   err.status = lastFailure.status;
   throw err;
