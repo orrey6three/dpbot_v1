@@ -9,7 +9,6 @@
     "dev": "nodemon bot.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "dotenv": "^16.4.5",
     "input": "^1.0.1",
     "node-cron": "^3.0.3",

@@ -201,6 +201,10 @@ export const config = {
   maxMsgAgeSeconds: optionalNumber("MAX_MSG_AGE_SECONDS", 2 * 60 * 60),
   historyLimit: optionalNumber("HISTORY_LIMIT", 100),
   historyBatchSize: optionalNumber("HISTORY_BATCH_SIZE", 5),
+  /** 0 = не опрашивать историю по таймеру (только после подключения). >0 — интервал в мс, напр. 45000 */
+  mtprotoHistoryPollIntervalMs: optionalNumber("MTPROTO_HISTORY_POLL_INTERVAL_MS", 0),
+  /** Сколько последних сообщений тянуть при таймерном опросе истории */
+  mtprotoHistoryPollLimit: optionalNumber("MTPROTO_HISTORY_POLL_LIMIT", 10),
 
   connectionGraceMs: optionalNumber("CONNECTION_GRACE_MS", 15000),
   connectionProbeIntervalMs: optionalNumber("CONNECTION_PROBE_INTERVAL_MS", 60000),

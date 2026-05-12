@@ -360,24 +360,35 @@ export function createMtprotoTransport({ config, state }) {
         }
       }, config.connectionProbeIntervalMs);
 
-      // 4. ACTIVE POLLING (The "Genius" fallback)
-      // Every 45 seconds, manually check history just in case event stream stalled
-      pollTimer = setInterval(async () => {
-        if (stopRequested || !client.connected) return;
-        
-        logger.verbose(`[${sessionCfg.name}] [Active Polling] Checking ${targetChatIds.length} chats for updates...`);
-        for (const chatId of targetChatIds) {
-          try {
-            await processHistory(
-              client,
-              { ...config, chatId, historyLimit: 10 }, // Check last 10 messages
-              { targetChatIds, chatCityMap: config.chatCityMap }
-            );
-          } catch (err) {
-            logger.warn(`[${sessionCfg.name}] Active Polling failed for ${chatId}: ${err.message}`);
+      // 4. Опциональный опрос истории (если стрим апдейтов залип — иначе только live-события)
+      if (config.mtprotoHistoryPollIntervalMs > 0) {
+        pollTimer = setInterval(async () => {
+          if (stopRequested || !client.connected) return;
+
+          logger.verbose(
+            `[${sessionCfg.name}] [History poll] Checking ${targetChatIds.length} chats (limit=${config.mtprotoHistoryPollLimit})...`
+          );
+          for (const chatId of targetChatIds) {
+            try {
+              await processHistory(
+                client,
+                {
+                  ...config,
+                  chatId,
+                  historyLimit: config.mtprotoHistoryPollLimit,
+                },
+                { targetChatIds, chatCityMap: config.chatCityMap }
+              );
+            } catch (err) {
+              logger.warn(`[${sessionCfg.name}] History poll failed for ${chatId}: ${err.message}`);
+            }
           }
+        }, config.mtprotoHistoryPollIntervalMs);
+
+        if (typeof pollTimer.unref === "function") {
+          pollTimer.unref();
         }
-      }, 45000);
+      }
 
       logger.log(`[${sessionCfg.name}] Listening for new messages in ${targetChatIds.length} chats...`);
 

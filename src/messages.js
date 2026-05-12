@@ -9,10 +9,6 @@ export function adaptMtprotoMessage(message) {
     text: message.message || "",
     date: message.date,
     replyToMessageId: message.replyTo?.replyToMsgId ?? null,
-    async getChatUsername() {
-      const chat = await message.getChat();
-      return chat?.username || "";
-    },
     async getReplyText() {
       const parent = await message.getReplyMessage();
       return parent?.message || null;
@@ -37,9 +33,6 @@ export function adaptBotApiMessage(message) {
     text,
     date: message.date,
     replyToMessageId: message.reply_to_message?.message_id ?? null,
-    async getChatUsername() {
-      return chat.username || "";
-    },
     async getReplyText() {
       return message.reply_to_message?.text || message.reply_to_message?.caption || null;
     },

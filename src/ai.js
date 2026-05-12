@@ -186,7 +186,9 @@ async function parseLlmSuccessResponse(res, start) {
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    logger.error(`AI: failed to parse JSON — ${Logger.truncate(cleaned, 120)}`);
+    const preview =
+      cleaned.length <= 200 ? JSON.stringify(cleaned) : Logger.truncate(cleaned, 120);
+    logger.error(`AI: failed to parse JSON — len=${cleaned.length} body=${preview}`);
     const e = new Error("OpenRouter: invalid JSON in model response");
     e.transient = true;
     throw e;

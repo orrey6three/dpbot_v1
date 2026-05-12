@@ -15,9 +15,6 @@ const processedCache = new ProcessedCache(
   config.stateFilePath
 );
 
-// Using normalizeChatId from config.js
-
-
 async function resolveText(message) {
   const chatId = normalizeChatId(message.chatId ?? "");
   const text = message.text;
@@ -61,7 +58,6 @@ async function resolveAuthor(message) {
  *   replyToMessageId: number | null,
  *   getReplyText: () => Promise<string | null>,
  *   getAuthor: () => Promise<string>,
- *   getChatUsername?: () => Promise<string>,
  * }} NormalizedMessage
  */
 
@@ -188,8 +184,11 @@ export async function processMessage(message, options = {}) {
     }
   }
 
+  // Сообщение уже «разобрано» (AI + геокод + попытки API). Помечаем в кэше всегда — иначе при
+  // каждом sync/polling истории снова гоняются те же msgId (дорогой AI, спам в логах, лимиты API).
+  processedCache.add(chatId, message.id);
+
   if (successCount === posts.length) {
-    processedCache.add(chatId, message.id);
     logger.log(
       `Processor: finished msgId=${message.id} — saved ${successCount}/${posts.length} post(s)`
     );
@@ -198,13 +197,13 @@ export async function processMessage(message, options = {}) {
 
   if (successCount === 0) {
     logger.warn(
-      `Processor: msgId=${message.id} — all ${posts.length} post(s) failed; not marking processed so it can retry`
+      `Processor: msgId=${message.id} — all ${posts.length} post(s) failed; marked processed (no repeat). Re-send in chat if API was fixed.`
     );
     return false;
   }
 
   logger.warn(
-    `Processor: msgId=${message.id} — partial success ${successCount}/${posts.length}; not marking processed (retry may duplicate saved posts)`
+    `Processor: msgId=${message.id} — partial success ${successCount}/${posts.length}; marked processed (saved posts not re-sent)`
   );
   return true;
 }

@@ -4,7 +4,6 @@ import path from "node:path";
 /**
  * MessageCache — хранит текст и parentId для построения цепочек ответов.
  * ProcessedCache — дедупликация: не обрабатывать одно сообщение дважды.
- * MarkerCache — хранит ID последних созданных постов для их обновления/удаления.
  */
 
 function resolveStoragePath(storagePath) {
