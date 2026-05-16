@@ -304,22 +304,9 @@ export function createMtprotoTransport({ config, state }) {
       // 1. First, register the event handlers so we don't miss anything while syncing
       client.addEventHandler(onNewMessage, new NewMessage({}));
       
-      // Add a raw logger to see if ANY updates are coming from Telegram
-      client.addEventHandler((update) => {
-        if (update instanceof Api.UpdateNewMessage || update instanceof Api.UpdateNewChannelMessage) {
-          // These are already handled by onNewMessage
-          return;
-        }
-        // Log other types of updates for debugging
-        if (update.constructor) {
-          logger.debug(`[${sessionCfg.name}] Raw update: ${update.constructor.name}`);
-        }
-      });
-
       const stateResult = await client.invoke(new Api.updates.GetState());
       logger.log(`[${sessionCfg.name}] MTProto: updates state synced (pts=${stateResult.pts})`);
 
-      // onConnectionState already added above
       logger.log(`[${sessionCfg.name}] MTProto: event handlers registered`);
 
       // 2. Then sync history
