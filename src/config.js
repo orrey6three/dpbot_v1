@@ -202,7 +202,7 @@ export const config = {
   historyLimit: optionalNumber("HISTORY_LIMIT", 100),
   historyBatchSize: optionalNumber("HISTORY_BATCH_SIZE", 5),
   /** 0 = не опрашивать историю по таймеру (только после подключения). >0 — интервал в мс, напр. 45000 */
-  mtprotoHistoryPollIntervalMs: optionalNumber("MTPROTO_HISTORY_POLL_INTERVAL_MS", 0),
+  mtprotoHistoryPollIntervalMs: optionalNumber("MTPROTO_HISTORY_POLL_INTERVAL_MS", 120_000),
   /** Сколько последних сообщений тянуть при таймерном опросе истории */
   mtprotoHistoryPollLimit: optionalNumber("MTPROTO_HISTORY_POLL_LIMIT", 10),
 

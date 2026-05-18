@@ -35,12 +35,48 @@ function isFatalSessionError(error) {
   );
 }
 
-async function warmupDialogs(client, sessionName) {
+async function warmupDialogs(client, sessionName, targetChatIds = []) {
   try {
     const dialogs = await client.getDialogs({ limit: 200 });
     logger.log(`[${sessionName}] Dialog cache warmup complete: ${dialogs.length} dialogs loaded`);
+
+    const normalizedTargets = new Set(targetChatIds.map(normalizeChatId));
+    const groups = [];
+
+    for (const dialog of dialogs) {
+      const entity = dialog.entity;
+      if (!entity || (!dialog.isGroup && !dialog.isChannel)) continue;
+      const markedId = entity.className === "Channel"
+        ? `-100${entity.id}`
+        : `-${entity.id}`;
+      const title = entity.title || "?";
+      const isTarget = normalizedTargets.has(normalizeChatId(markedId));
+      groups.push({ markedId, title, isTarget });
+    }
+
+    if (groups.length) {
+      logger.log(`[${sessionName}] --- Groups/channels in account ---`);
+      for (const g of groups) {
+        const mark = g.isTarget ? "TARGET" : "      ";
+        logger.log(`[${sessionName}]   [${mark}] ${g.markedId} "${g.title}"`);
+      }
+      logger.log(`[${sessionName}] --- end groups (${groups.length}) ---`);
+    }
+
+    const found = groups.filter((g) => g.isTarget);
+    const missing = targetChatIds.filter(
+      (id) => !groups.some((g) => normalizeChatId(g.markedId) === normalizeChatId(id))
+    );
+    if (missing.length) {
+      logger.warn(
+        `[${sessionName}] Target chats NOT FOUND in dialogs: ${missing.join(", ")}. Check .env chat IDs!`
+      );
+    }
+
+    return groups;
   } catch (err) {
     logger.warn(`[${sessionName}] Dialog cache warmup failed: ${err.message}`);
+    return [];
   }
 }
 
@@ -184,15 +220,11 @@ export function createMtprotoTransport({ config, state }) {
       const chatId = normalizeChatId(rawChatId);
       const isTarget = normalizedTargetIds.includes(chatId);
 
-      // WE LOG EVERYTHING AS REQUESTED
-      const logPrefix = isTarget ? "TARGET" : "SKIP";
-      logger.log(
-        `[${sessionCfg.name}] [${logPrefix}] msgId=${msgId} chatId=${rawChatId} text="${Logger.truncate(text, 100)}"`
-      );
+      if (!isTarget) return;
 
-      if (!isTarget) {
-        return;
-      }
+      logger.log(
+        `[${sessionCfg.name}] [TARGET] msgId=${msgId} chatId=${rawChatId} text="${Logger.truncate(text, 100)}"`
+      );
 
       // TARGET messages update the watchdog
       lastEventAt = Date.now();
@@ -294,7 +326,7 @@ export function createMtprotoTransport({ config, state }) {
 
       client.addEventHandler(onConnectionState, connectionEvent);
 
-      await warmupDialogs(client, sessionCfg.name);
+      await warmupDialogs(client, sessionCfg.name, targetChatIds);
       const me = await client.getMe();
       const accountLabel = me.username || me.firstName || sessionCfg.name;
       state.activeAccountUsername = me.username || null;
@@ -347,12 +379,13 @@ export function createMtprotoTransport({ config, state }) {
         }
       }, config.connectionProbeIntervalMs);
 
-      // 4. Опциональный опрос истории (если стрим апдейтов залип — иначе только live-события)
+      // 4. Опрос истории по таймеру (страховка от залипшего стрима апдейтов gramjs)
       if (config.mtprotoHistoryPollIntervalMs > 0) {
+        logger.log(`[${sessionCfg.name}] History polling enabled: every ${config.mtprotoHistoryPollIntervalMs / 1000}s`);
         pollTimer = setInterval(async () => {
           if (stopRequested || !client.connected) return;
 
-          logger.verbose(
+          logger.log(
             `[${sessionCfg.name}] [History poll] Checking ${targetChatIds.length} chats (limit=${config.mtprotoHistoryPollLimit})...`
           );
           for (const chatId of targetChatIds) {
