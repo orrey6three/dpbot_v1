@@ -37,22 +37,49 @@ function isFatalSessionError(error) {
 
 async function warmupDialogs(client, sessionName, targetChatIds = []) {
   try {
-    const dialogs = await client.getDialogs({ limit: 200 });
-    logger.log(`[${sessionName}] Dialog cache warmup complete: ${dialogs.length} dialogs loaded`);
-
     const normalizedTargets = new Set(targetChatIds.map(normalizeChatId));
     const groups = [];
 
-    for (const dialog of dialogs) {
-      const entity = dialog.entity;
-      if (!entity || (!dialog.isGroup && !dialog.isChannel)) continue;
-      const markedId = entity.className === "Channel"
-        ? `-100${entity.id}`
-        : `-${entity.id}`;
-      const title = entity.title || "?";
-      const isTarget = normalizedTargets.has(normalizeChatId(markedId));
-      groups.push({ markedId, title, isTarget });
+    function extractGroups(dialogs) {
+      for (const dialog of dialogs) {
+        const entity = dialog.entity;
+        if (!entity || (!dialog.isGroup && !dialog.isChannel)) continue;
+        const markedId = entity.className === "Channel"
+          ? `-100${entity.id}`
+          : `-${entity.id}`;
+        if (!groups.some(g => g.markedId === markedId)) {
+          const isTarget = normalizedTargets.has(normalizeChatId(markedId));
+          groups.push({ markedId, title: entity.title || "?", isTarget });
+        }
+      }
     }
+
+    let dialogs = await client.getDialogs({ limit: 200 });
+    extractGroups(dialogs);
+
+    let missing = targetChatIds.filter(
+      (id) => !groups.some((g) => normalizeChatId(g.markedId) === normalizeChatId(id))
+    );
+
+    if (missing.length > 0) {
+      logger.log(`[${sessionName}] Top 200 dialogs loaded. Missing some target chats, checking archived folders...`);
+      const archivedDialogs = await client.getDialogs({ limit: 200, folder: 1 });
+      extractGroups(archivedDialogs);
+      missing = targetChatIds.filter(
+        (id) => !groups.some((g) => normalizeChatId(g.markedId) === normalizeChatId(id))
+      );
+    }
+
+    if (missing.length > 0) {
+      logger.log(`[${sessionName}] Still missing ${missing.length} target chats. Fetching all dialogs (this may take a moment)...`);
+      const allDialogs = await client.getDialogs({ limit: undefined });
+      extractGroups(allDialogs);
+      missing = targetChatIds.filter(
+        (id) => !groups.some((g) => normalizeChatId(g.markedId) === normalizeChatId(id))
+      );
+    }
+
+    logger.log(`[${sessionName}] Dialog cache warmup complete: ${groups.length} groups/channels loaded`);
 
     if (groups.length) {
       logger.log(`[${sessionName}] --- Groups/channels in account ---`);
@@ -63,10 +90,6 @@ async function warmupDialogs(client, sessionName, targetChatIds = []) {
       logger.log(`[${sessionName}] --- end groups (${groups.length}) ---`);
     }
 
-    const found = groups.filter((g) => g.isTarget);
-    const missing = targetChatIds.filter(
-      (id) => !groups.some((g) => normalizeChatId(g.markedId) === normalizeChatId(id))
-    );
     if (missing.length) {
       logger.warn(
         `[${sessionName}] Target chats NOT FOUND in dialogs: ${missing.join(", ")}. Check .env chat IDs!`
