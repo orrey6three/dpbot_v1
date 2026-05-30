@@ -3,7 +3,7 @@ import { StringSession } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/Raw.js";
 import { UpdateConnectionState } from "telegram/network/index.js";
-import { config, normalizeChatId } from "../config.js";
+import { chatIdsMatch, config, normalizeChatId } from "../config.js";
 import { adaptMtprotoMessage } from "../messages.js";
 import { processMessage } from "../processor.js";
 import { Logger } from "../logger.js";
@@ -32,6 +32,16 @@ function isFatalSessionError(error) {
     message.includes("SESSION_REVOKED") ||
     message.includes("USER_DEACTIVATED") ||
     message.includes("AUTH_KEY_UNREGISTERED")
+  );
+}
+
+function isChatAccessError(error) {
+  const message = error?.message || "";
+  return (
+    message.includes("Could not find the input entity") ||
+    error?.errorMessage === "CHANNEL_INVALID" ||
+    error?.errorMessage === "CHANNEL_PRIVATE" ||
+    error?.errorMessage === "CHAT_ID_INVALID"
   );
 }
 
@@ -96,10 +106,15 @@ async function warmupDialogs(client, sessionName, targetChatIds = []) {
       );
     }
 
-    return groups;
+    return {
+      groups,
+      accessibleMarkedIds: groups
+        .filter((g) => targetChatIds.some((id) => chatIdsMatch(g.markedId, id)))
+        .map((g) => g.markedId),
+    };
   } catch (err) {
     logger.warn(`[${sessionName}] Dialog cache warmup failed: ${err.message}`);
-    return [];
+    return { groups: [], accessibleMarkedIds: [] };
   }
 }
 
@@ -109,8 +124,15 @@ async function processHistory(client, config, options = {}) {
 
   let messages;
   try {
-    messages = await client.getMessages(chatId, { limit: config.historyLimit });
+    const entity = await client.getEntity(chatId);
+    messages = await client.getMessages(entity, { limit: config.historyLimit });
   } catch (err) {
+    if (isChatAccessError(err)) {
+      logger.warn(
+        `Skip history for ${chatId}: this account is not in the chat (${err.errorMessage || err.message})`
+      );
+      return;
+    }
     logger.error(`Failed to fetch history for ${chatId}: ${err.message}`);
     return;
   }
@@ -222,7 +244,8 @@ export function createMtprotoTransport({ config, state }) {
     const targetChatIds = config.targetChatIds || [];
     const connectionEvent = new Raw({ types: [UpdateConnectionState] });
 
-    const normalizedTargetIds = targetChatIds.map(normalizeChatId);
+    let sessionTargetChats = targetChatIds;
+    let normalizedTargetIds = targetChatIds.map(normalizeChatId);
 
     let processingQueue = Promise.resolve();
 
@@ -349,7 +372,26 @@ export function createMtprotoTransport({ config, state }) {
 
       client.addEventHandler(onConnectionState, connectionEvent);
 
-      await warmupDialogs(client, sessionCfg.name, targetChatIds);
+      const warmup = await warmupDialogs(client, sessionCfg.name, targetChatIds);
+      sessionTargetChats = targetChatIds.filter((id) =>
+        warmup.accessibleMarkedIds.some((mid) => chatIdsMatch(mid, id))
+      );
+      normalizedTargetIds = sessionTargetChats.map(normalizeChatId);
+
+      const skipped = targetChatIds.filter(
+        (id) => !sessionTargetChats.some((ok) => chatIdsMatch(ok, id))
+      );
+      if (skipped.length) {
+        logger.warn(
+          `[${sessionCfg.name}] Chats skipped (not in this account's dialogs): ${skipped.join(", ")} — add the account to the chat or disable the session`
+        );
+      }
+      if (!sessionTargetChats.length) {
+        logger.warn(
+          `[${sessionCfg.name}] No target chats available for this session; only failover / reconnect will run`
+        );
+      }
+
       const me = await client.getMe();
       const accountLabel = me.username || me.firstName || sessionCfg.name;
       state.activeAccountUsername = me.username || null;
@@ -366,9 +408,9 @@ export function createMtprotoTransport({ config, state }) {
 
       // 2. Then sync history
       logger.log(
-        `[${sessionCfg.name}] MTProto: syncing chat history (${targetChatIds.length} chat(s))...`
+        `[${sessionCfg.name}] MTProto: syncing chat history (${sessionTargetChats.length}/${targetChatIds.length} chat(s))...`
       );
-      for (const chatId of targetChatIds) {
+      for (const chatId of sessionTargetChats) {
         try {
           await processHistory(
             client,
@@ -409,9 +451,9 @@ export function createMtprotoTransport({ config, state }) {
           if (stopRequested || !client.connected) return;
 
           logger.log(
-            `[${sessionCfg.name}] [History poll] Checking ${targetChatIds.length} chats (limit=${config.mtprotoHistoryPollLimit})...`
+            `[${sessionCfg.name}] [History poll] Checking ${sessionTargetChats.length} chats (limit=${config.mtprotoHistoryPollLimit})...`
           );
-          for (const chatId of targetChatIds) {
+          for (const chatId of sessionTargetChats) {
             try {
               await processHistory(
                 client,
@@ -433,7 +475,9 @@ export function createMtprotoTransport({ config, state }) {
         }
       }
 
-      logger.log(`[${sessionCfg.name}] Listening for new messages in ${targetChatIds.length} chats...`);
+      logger.log(
+        `[${sessionCfg.name}] Listening for new messages in ${sessionTargetChats.length} chat(s)...`
+      );
 
       const outcome = await lifecycle.promise;
       return outcome;
@@ -469,7 +513,12 @@ export function createMtprotoTransport({ config, state }) {
         throw new Error("Сессии не найдены. Запусти: node login.js");
       }
 
-      logger.log(`Starting failover chain with ${config.sessions.length} sessions...`);
+      const singleSession = config.sessions.length === 1;
+      logger.log(
+        singleSession
+          ? `MTProto: single session mode (${config.sessions[0].name}), reconnect delay ${config.reconnectDelayMs}ms`
+          : `Starting failover chain with ${config.sessions.length} sessions...`
+      );
       let index = 0;
 
       while (!stopRequested) {
@@ -490,7 +539,11 @@ export function createMtprotoTransport({ config, state }) {
         const nextIndex = (index + 1) % config.sessions.length;
         const nextSession = config.sessions[nextIndex];
 
-        if (isFatal) {
+        if (singleSession) {
+          logger.warn(
+            `Session "${sessionCfg.name}" stopped: ${reason}. Reconnecting in ${config.reconnectDelayMs}ms...`
+          );
+        } else if (isFatal) {
           logger.error(
             `Session "${sessionCfg.name}" failed fatally: ${reason}. Switching to "${nextSession.name}".`
           );

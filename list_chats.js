@@ -27,14 +27,30 @@ if (!apiId || !apiHash || !sessionValue) {
 
   const dialogs = await client.getDialogs({ limit: 200 });
   
-  console.log("\n--- СПИСОК ТВОИХ ЧАТОВ ---");
+  const envTargets = {
+    CHAT_SHUMIKHA_ID: process.env.CHAT_SHUMIKHA_ID,
+    CHAT_SHCHUCHYE_ID: process.env.CHAT_SHCHUCHYE_ID,
+    CHAT_MISHKINO_ID: process.env.CHAT_MISHKINO_ID,
+  };
+
+  console.log("\n--- СПИСОК ГРУПП / КАНАЛОВ (для .env) ---");
   for (const dialog of dialogs) {
+    if (!dialog.isGroup && !dialog.isChannel) continue;
     const title = dialog.title || "Без названия";
     const id = dialog.id.toString();
-    console.log(`${title} | ID: ${id}`);
+    const envHit = Object.entries(envTargets)
+      .filter(([, v]) => v && id.replace(/^-100/, "") === String(v).replace(/^-100/, ""))
+      .map(([k]) => k);
+    const mark = envHit.length ? `  ← .env ${envHit.join(", ")}` : "";
+    console.log(`${title} | ID: ${id}${mark}`);
   }
-  console.log("---------------------------\n");
-  
-  console.log("✅ Готово! Найди нужный чат в списке, скопируй его ID в .env и заново запусти npm start.");
+  console.log("---------------------------");
+  console.log("Ожидаемые в .env:");
+  for (const [key, val] of Object.entries(envTargets)) {
+    console.log(`  ${key}=${val || "(не задан)"}`);
+  }
+  console.log(
+    "\n✅ Скопируй ID в .env. Каждая STRING_SESSION должна быть участником всех целевых чатов, иначе будет CHANNEL_INVALID."
+  );
   process.exit(0);
 })();

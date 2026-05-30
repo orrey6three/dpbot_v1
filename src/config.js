@@ -42,6 +42,11 @@ export function normalizeChatId(value) {
   return String(value || "").trim().replace(/^-100/, "");
 }
 
+/** Сравнение chat id из .env и из gramJS (-100… / 2027…). */
+export function chatIdsMatch(a, b) {
+  return normalizeChatId(a) === normalizeChatId(b);
+}
+
 function splitCsv(value) {
   return String(value || "")
     .split(",")
